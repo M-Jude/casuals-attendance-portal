@@ -40,23 +40,69 @@ function circularMinuteDistance(a, b) {
   return Math.min(diff, 1440 - diff);
 }
 
-// Classifies a single punch to the shift it most likely belongs to, using
-// only the punch's own time-of-day — no pre-assigned roster required.
-// Check-ins are matched against shift START times; check-outs are matched
-// against shift END times. Since Day (08:00-17:00) and Night (17:00-08:00)
-// tile the full 24h with a hard boundary and no gap, this is unambiguous
-// for realistic arrival/departure variance (minutes to a couple of hours) —
-// it only breaks down if someone is literally half a shift early or late,
-// which would be a data-quality problem regardless of matching strategy.
+// This deployment's devices report every punch as PUNCH_TYPE_NONE (mapped to
+// eventType 'other' by attendanceSync.js) — none carry an explicit
+// check-in/check-out label. Time-of-day alone can't infer the label either:
+// Day (08:00-17:00) and Night (17:00-08:00) share both boundaries, so the
+// set of shift START times ({08:00, 17:00}) is identical to the set of END
+// times — a punch near 08:00 is equally "close" to Day-start and
+// Night-end, and the same is true at 17:00. Disambiguating requires the
+// punch's position in that worker's sequence, not just its clock time.
 //
-// Returns { shift, anchorDateStr } or null if the punch isn't a
-// check-in/check-out (e.g. a break punch) — those aren't classified here.
+// This assigns each punch an inferred role by alternation (check-in,
+// check-out, check-in, ...), respecting an explicit eventType where the
+// device does provide one (mixed environments, or a future firmware/config
+// change) and only inferring for 'other'. Must be called per-worker on
+// chronologically sorted punches — the alternation state doesn't span
+// workers, and a worker's true first punch of the window is assumed to be a
+// check-in (a reasonable default, same edge-case tradeoff any FILO/pairing
+// heuristic accepts at a window boundary).
+//
+// Caveat: this assumes every untyped punch is a shift boundary. If this
+// deployment's devices are later configured to distinguish break/meal
+// punches (BREAK_START/END, MEAL_START/END) from real check-in/check-out,
+// mapPunchType in attendanceSync.js needs to stop collapsing them into
+// 'other' first, or they'd get swept into this alternation and corrupt the
+// pairing.
+function assignEffectiveTypes(workerPunchesAsc) {
+  let expectingCheckIn = true;
+  return workerPunchesAsc.map((punch) => {
+    let effectiveType;
+    if (punch.eventType === 'check-in') {
+      effectiveType = 'check-in';
+      expectingCheckIn = false;
+    } else if (punch.eventType === 'check-out') {
+      effectiveType = 'check-out';
+      expectingCheckIn = true;
+    } else {
+      effectiveType = expectingCheckIn ? 'check-in' : 'check-out';
+      expectingCheckIn = !expectingCheckIn;
+    }
+    return { ...punch, effectiveType };
+  });
+}
+
+// Classifies a single punch to the shift it most likely belongs to, using
+// its effective role (see assignEffectiveTypes) and its own time-of-day —
+// no pre-assigned roster required. Check-ins are matched against shift
+// START times; check-outs are matched against shift END times. Since Day
+// and Night tile the full 24h with a hard boundary and no gap, this is
+// unambiguous for realistic arrival/departure variance (minutes to a
+// couple of hours) once the role is known — it only breaks down if someone
+// is literally half a shift early or late, which would be a data-quality
+// problem regardless of matching strategy.
+//
+// Accepts a punch with either `effectiveType` (set by assignEffectiveTypes)
+// or a plain `eventType` of 'check-in'/'check-out' (for direct unit testing
+// and for the rare device that does label its punches). Returns
+// { shift, anchorDateStr } or null if neither is present.
 function classifyPunch(punch, shifts) {
-  if (punch.eventType !== 'check-in' && punch.eventType !== 'check-out') return null;
+  const role = punch.effectiveType || punch.eventType;
+  if (role !== 'check-in' && role !== 'check-out') return null;
 
   const [eatDateStr, eatTime] = utcToEat(punch.timestamp);
   const punchMinutes = hhmmToMinutes(eatTime);
-  const anchorField = punch.eventType === 'check-in' ? 'startTime' : 'endTime';
+  const anchorField = role === 'check-in' ? 'startTime' : 'endTime';
 
   let best = null;
   let bestDistance = Infinity;
@@ -73,7 +119,7 @@ function classifyPunch(punch, shifts) {
   // anchor date is when the shift began, not when this punch happened.
   const isOvernightShift = best.endTime <= best.startTime;
   const anchorDateStr =
-    punch.eventType === 'check-out' && isOvernightShift
+    role === 'check-out' && isOvernightShift
       ? addDaysStr(eatDateStr, -1)
       : eatDateStr;
 
@@ -105,10 +151,21 @@ async function computeSummaries(fromDateStr, toDateStr) {
   const queryStart = eatToUtc(addDaysStr(fromDateStr, -1), '00:00');
   const queryEnd = eatToUtc(addDaysStr(toDateStr, 1), '23:59');
 
-  const punches = await prisma.attendanceLog.findMany({
+  const rawPunches = await prisma.attendanceLog.findMany({
     where: { timestamp: { gte: queryStart, lte: queryEnd } },
     orderBy: { timestamp: 'asc' }
   });
+
+  // Alternation state is per-worker, so split before assigning effective
+  // types, then flatten back into one timestamp-ascending list.
+  const punchesByWorker = new Map();
+  for (const punch of rawPunches) {
+    if (!punchesByWorker.has(punch.casualWorkerId)) punchesByWorker.set(punch.casualWorkerId, []);
+    punchesByWorker.get(punch.casualWorkerId).push(punch);
+  }
+  const punches = Array.from(punchesByWorker.values())
+    .flatMap((workerPunches) => assignEffectiveTypes(workerPunches))
+    .sort((a, b) => a.timestamp - b.timestamp);
 
   // Group classified punches by (worker, shift, anchor date).
   const groups = new Map();
@@ -128,7 +185,7 @@ async function computeSummaries(fromDateStr, toDateStr) {
     }
     const g = groups.get(key);
 
-    if (punch.eventType === 'check-in') {
+    if (punch.effectiveType === 'check-in') {
       g.checkInCount++;
       if (!g.checkIn || punch.timestamp < g.checkIn) g.checkIn = punch.timestamp;
     } else {
@@ -195,16 +252,24 @@ async function getPunchDetailForSummary(casualWorkerId, shiftId, anchorDateStr) 
     orderBy: { timestamp: 'asc' }
   });
 
+  // Single worker, so one alternation sequence across the whole window. Note
+  // this window differs from computeSummaries' (which spans the requested
+  // range, not one fixed anchor date), so an inferred role right at the
+  // window edge could in principle disagree between the two call sites for
+  // the same punch — an accepted edge-case tradeoff of per-query alternation
+  // rather than a globally precomputed role.
+  const punches = assignEffectiveTypes(rawPunches);
+
   const matched = [];
-  for (const punch of rawPunches) {
+  for (const punch of punches) {
     const classified = classifyPunch(punch, shifts);
     if (classified && classified.shift.id === shiftId && classified.anchorDateStr === anchorDateStr) {
       matched.push(punch);
     }
   }
 
-  const checkIns = matched.filter((p) => p.eventType === 'check-in');
-  const checkOuts = matched.filter((p) => p.eventType === 'check-out');
+  const checkIns = matched.filter((p) => p.effectiveType === 'check-in');
+  const checkOuts = matched.filter((p) => p.effectiveType === 'check-out');
   const earliestCheckIn = checkIns[0]?.timestamp.getTime() ?? null; // list is already timestamp-ascending
   const latestCheckOut = checkOuts[checkOuts.length - 1]?.timestamp.getTime() ?? null;
 
@@ -212,9 +277,9 @@ async function getPunchDetailForSummary(casualWorkerId, shiftId, anchorDateStr) 
     id: p.id,
     eventType: p.eventType,
     timestamp: p.timestamp,
-    usedAsCheckIn: p.eventType === 'check-in' && p.timestamp.getTime() === earliestCheckIn,
-    usedAsCheckOut: p.eventType === 'check-out' && p.timestamp.getTime() === latestCheckOut
+    usedAsCheckIn: p.effectiveType === 'check-in' && p.timestamp.getTime() === earliestCheckIn,
+    usedAsCheckOut: p.effectiveType === 'check-out' && p.timestamp.getTime() === latestCheckOut
   }));
 }
 
-module.exports = { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary };
+module.exports = { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes };

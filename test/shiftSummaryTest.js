@@ -42,7 +42,7 @@ function injectFakeModule(resolvedPath, exportsObj) {
 }
 injectFakeModule(prismaPath, fakePrisma);
 
-const { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary } = require('../sync/computeDailySummaries');
+const { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes } = require('../sync/computeDailySummaries');
 
 function utc(dateStr, hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -106,6 +106,22 @@ async function run() {
     { casualWorkerId: 4, eventType: 'check-out', timestamp: utc(D, '14:00') }  // 17:00 EAT
   );
 
+  // --- Real-world case for this deployment: worker 5's device reports every
+  // punch as 'other' (PUNCH_TYPE_NONE) — no explicit check-in/check-out.
+  // Ordinary Day shift; alternation must still infer check-in then
+  // check-out correctly from sequence alone. ---
+  fakeAttendanceLogs.push(
+    { casualWorkerId: 5, eventType: 'other', timestamp: utc(D, '04:58') }, // 07:58 EAT — untyped
+    { casualWorkerId: 5, eventType: 'other', timestamp: utc(D, '14:03') }  // 17:03 EAT — untyped
+  );
+
+  // --- Worker 6: untyped punches across a Night shift (crosses midnight) —
+  // alternation must combine correctly with the overnight anchor-date logic. ---
+  fakeAttendanceLogs.push(
+    { casualWorkerId: 6, eventType: 'other', timestamp: utc(D, '14:02') },   // 17:02 EAT D — untyped
+    { casualWorkerId: 6, eventType: 'other', timestamp: utc(D1, '04:58') }  // 07:58 EAT D+1 — untyped
+  );
+
   await computeSummaries(D, D1);
 
   console.log('\nSummaries:');
@@ -135,6 +151,37 @@ async function run() {
   checks.push(['worker 4 (duplicate check-in) still uses earliest check-in (FILO)', w4?.checkIn?.getTime() === utc(D, '04:50').getTime()]);
   checks.push(['worker 4 flagged hasMultiplePunches', w4?.hasMultiplePunches === true]);
   checks.push(['worker 1 (single punches) NOT flagged hasMultiplePunches', w1?.hasMultiplePunches === false]);
+
+  // --- Untyped punches (this deployment's real-world case): worker 5's Day
+  // shift must still get a summary row, with the first untyped punch
+  // inferred as check-in and the second as check-out. ---
+  const w5 = summaryFor(5, D);
+  checks.push(['UNTYPED PUNCHES: worker 5 (all "other" eventType) still gets a summary row', !!w5]);
+  checks.push(['UNTYPED PUNCHES: worker 5 classified as Day shift', w5?.shiftId === DAY_SHIFT.id]);
+  checks.push(['UNTYPED PUNCHES: first untyped punch inferred as check-in', w5?.checkIn?.getTime() === utc(D, '04:58').getTime()]);
+  checks.push(['UNTYPED PUNCHES: second untyped punch inferred as check-out', w5?.checkOut?.getTime() === utc(D, '14:03').getTime()]);
+  checks.push(['UNTYPED PUNCHES: worker 5 status correct (on-time)', w5?.status === 'on-time']);
+
+  // --- Untyped punches across an overnight shift ---
+  const w6 = summaryFor(6, D);
+  checks.push(['UNTYPED PUNCHES + OVERNIGHT: worker 6 anchored to D (Night shift start date)', !!w6]);
+  checks.push(['UNTYPED PUNCHES + OVERNIGHT: worker 6 classified as Night shift', w6?.shiftId === NIGHT_SHIFT.id]);
+  checks.push(['UNTYPED PUNCHES + OVERNIGHT: check-in/check-out correctly ordered despite crossing midnight', w6?.checkIn?.getTime() === utc(D, '14:02').getTime() && w6?.checkOut?.getTime() === utc(D1, '04:58').getTime()]);
+
+  // --- Direct unit test of assignEffectiveTypes: mixed typed/untyped
+  // punches — explicit types must be respected, only 'other' inferred, and
+  // alternation state must carry correctly across the mix. ---
+  const mixed = [
+    { eventType: 'other', timestamp: utc(D, '05:00') },      // no type — expect inferred check-in
+    { eventType: 'other', timestamp: utc(D, '14:00') },      // no type — expect inferred check-out
+    { eventType: 'check-in', timestamp: utc(D1, '05:00') },  // explicit — must stay check-in regardless of alternation
+    { eventType: 'other', timestamp: utc(D1, '14:00') }      // no type, follows an explicit check-in — expect inferred check-out
+  ];
+  const mixedResult = assignEffectiveTypes(mixed);
+  checks.push(['assignEffectiveTypes: untyped #1 inferred as check-in (window start default)', mixedResult[0].effectiveType === 'check-in']);
+  checks.push(['assignEffectiveTypes: untyped #2 inferred as check-out (alternates)', mixedResult[1].effectiveType === 'check-out']);
+  checks.push(['assignEffectiveTypes: explicit check-in is respected as-is', mixedResult[2].effectiveType === 'check-in']);
+  checks.push(['assignEffectiveTypes: untyped #4 inferred as check-out (follows explicit check-in)', mixedResult[3].effectiveType === 'check-out']);
 
   // --- getPunchDetailForSummary: worker 4's duplicate check-in ---
   const w4Punches = await getPunchDetailForSummary(4, DAY_SHIFT.id, D);
