@@ -24,11 +24,27 @@ function getAgent() {
   });
 }
 
+// Pulls a specific cookie's raw name=value pair out of a Set-Cookie header
+// array, so it can be sent back verbatim on later requests via a Cookie
+// header. Verified against a real Set-Cookie string from the live server —
+// see test/cookieExtractionTest.js.
+function extractCookie(setCookieHeader, cookieName) {
+  if (!setCookieHeader) return null;
+  const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+
+  for (const cookieStr of cookies) {
+    const match = cookieStr.match(new RegExp(`^${cookieName}=([^;]+)`));
+    if (match) return `${cookieName}=${match[1]}`; // keep it URL-encoded, as received
+  }
+  return null;
+}
+
 // TA (Time & Attendance) login is a separate auth domain from the AC API —
 // it takes the account's login_id (in a field confusingly named `user_id`,
 // not the AC API's numeric user id) and password directly, and returns the
 // session as a `bs-ta-session-id` Set-Cookie header rather than a plain
 // response header, so it has to be replayed as a Cookie on later requests.
+// Confirmed against a live server via test/liveBiostarCheck.js.
 async function loginToTA() {
   const res = await axios.post(
     `${TA_BASE_URL}/login`,
@@ -36,12 +52,11 @@ async function loginToTA() {
     { httpsAgent: getAgent(), validateStatus: () => true }
   );
 
-  const setCookie = res.headers['set-cookie']?.find((c) => c.startsWith('bs-ta-session-id='));
-  if (!setCookie) {
+  taSessionCookie = extractCookie(res.headers['set-cookie'], 'bs-ta-session-id');
+
+  if (!taSessionCookie) {
     throw new Error(`TA login failed — no bs-ta-session-id cookie in response (HTTP ${res.status}: ${JSON.stringify(res.data)})`);
   }
-
-  taSessionCookie = setCookie.split(';')[0];
   return taSessionCookie;
 }
 
@@ -65,11 +80,17 @@ async function fetchPunchLogsForDate(dateStr) {
     { headers: { Cookie: taSessionCookie }, httpsAgent: getAgent(), validateStatus: () => true }
   );
 
-  if (res.status === 401) {
-    // TA session expired — re-login once and retry
+  if (res.status === 401 || res.status === 404) {
+    // 401: TA session expired. 404 can also occur if the session cookie
+    // wasn't accepted and BioStar's router falls through unexpectedly —
+    // re-login once and retry either way before giving up.
     taSessionCookie = null;
     await loginToTA();
     return fetchPunchLogsForDate(dateStr);
+  }
+
+  if (res.status !== 200) {
+    throw new Error(`Punch log fetch failed — HTTP ${res.status}: ${JSON.stringify(res.data)}`);
   }
 
   return res.data?.records || [];
@@ -96,7 +117,7 @@ async function fetchGroupUsers(groupName) {
       validateStatus: () => true
     });
 
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 404) {
       taSessionCookie = null;
       await loginToTA();
       continue; // retry this same page with a fresh session

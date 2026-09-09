@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import PunchHistoryModal from './PunchHistoryModal';
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -12,58 +13,24 @@ function daysAgoISO(n) {
 
 function formatTime(ts) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Kampala' });
 }
 
-function formatDate(ts) {
-  return new Date(ts).toLocaleDateString([], { day: '2-digit', month: 'short' });
-}
-
-// Groups raw punch events into one row per worker per day. Prefers BioStar's
-// own check-in/check-out classification when a device reports it, but falls
-// back to the day's earliest/latest punch when it doesn't — this BioStar
-// deployment's devices mostly report an unclassified punch type, so without
-// the fallback every row would show blank In/Out times.
-function groupByWorkerAndDay(logs) {
-  const groups = new Map();
-
-  for (const log of logs) {
-    const day = new Date(log.timestamp).toDateString();
-    const key = `${log.casualWorkerId}-${day}`;
-
-    if (!groups.has(key)) {
-      groups.set(key, {
-        workerId: log.worker.biostarUserId,
-        workerName: log.worker.name,
-        date: log.timestamp,
-        punches: []
-      });
-    }
-    groups.get(key).punches.push(log);
-  }
-
-  return Array.from(groups.values()).map((row) => {
-    const punches = [...row.punches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    const taggedIn = punches.filter((p) => p.eventType === 'check-in');
-    const taggedOut = punches.filter((p) => p.eventType === 'check-out');
-
-    const checkIn = taggedIn.length > 0 ? taggedIn[0].timestamp : punches[0].timestamp;
-    const checkOut = taggedOut.length > 0
-      ? taggedOut[taggedOut.length - 1].timestamp
-      : (punches.length > 1 ? punches[punches.length - 1].timestamp : null);
-
-    return { workerId: row.workerId, workerName: row.workerName, date: row.date, checkIn, checkOut };
+function formatDate(dateStr) {
+  // dateStr is a YYYY-MM-DD anchor date, not a timestamp — parse as UTC
+  // midnight so no further timezone shifting is applied to it.
+  return new Date(`${dateStr}T00:00:00Z`).toLocaleDateString([], {
+    day: '2-digit', month: 'short', timeZone: 'UTC'
   });
 }
 
-// Shared by the table and the CSV export so they can never disagree.
-function getStatus(row) {
-  if (row.checkIn && !row.checkOut) return 'No checkout';
-  if (row.checkIn && new Date(row.checkIn).getHours() >= 9) return 'Late';
-  return 'On time';
-}
+const STATUS_LABEL = {
+  'on-time': 'On time',
+  late: 'Late',
+  'no-checkout': 'No checkout'
+};
 
-const STATUS_RANK = { Late: 0, 'No checkout': 1, 'On time': 2 };
+const STATUS_RANK = { late: 0, 'no-checkout': 1, 'on-time': 2 };
 
 const SORT_OPTIONS = [
   { value: 'date-desc', label: 'Date (newest first)' },
@@ -85,25 +52,25 @@ function sortRows(rows, sortBy) {
   const sorted = [...rows];
   switch (sortBy) {
     case 'date-asc':
-      sorted.sort((a, b) => new Date(a.date) - new Date(b.date));
+      sorted.sort((a, b) => a.date.localeCompare(b.date));
       break;
     case 'date-desc':
-      sorted.sort((a, b) => new Date(b.date) - new Date(a.date));
+      sorted.sort((a, b) => b.date.localeCompare(a.date));
       break;
     case 'name-asc':
-      sorted.sort((a, b) => a.workerName.localeCompare(b.workerName));
+      sorted.sort((a, b) => a.worker.name.localeCompare(b.worker.name));
       break;
     case 'name-desc':
-      sorted.sort((a, b) => b.workerName.localeCompare(a.workerName));
+      sorted.sort((a, b) => b.worker.name.localeCompare(a.worker.name));
       break;
     case 'id-asc':
-      sorted.sort((a, b) => a.workerId.localeCompare(b.workerId, undefined, { numeric: true }));
+      sorted.sort((a, b) => a.worker.biostarUserId.localeCompare(b.worker.biostarUserId, undefined, { numeric: true }));
       break;
     case 'id-desc':
-      sorted.sort((a, b) => b.workerId.localeCompare(a.workerId, undefined, { numeric: true }));
+      sorted.sort((a, b) => b.worker.biostarUserId.localeCompare(a.worker.biostarUserId, undefined, { numeric: true }));
       break;
     case 'status':
-      sorted.sort((a, b) => STATUS_RANK[getStatus(a)] - STATUS_RANK[getStatus(b)]);
+      sorted.sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
       break;
     default:
       break;
@@ -122,12 +89,13 @@ function groupRows(rows, groupBy) {
 
   const groups = new Map();
   for (const row of rows) {
-    const key = groupBy === 'date' ? new Date(row.date).toDateString() : row.workerId;
+    const dateStr = row.date.slice(0, 10);
+    const key = groupBy === 'date' ? dateStr : row.worker.id;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
-        label: groupBy === 'date' ? formatDate(row.date) : `${row.workerName} (${row.workerId})`,
-        sortKey: groupBy === 'date' ? new Date(row.date).getTime() : row.workerName.toLowerCase(),
+        label: groupBy === 'date' ? formatDate(dateStr) : `${row.worker.name} (${row.worker.biostarUserId})`,
+        sortKey: groupBy === 'date' ? dateStr : row.worker.name.toLowerCase(),
         rows: []
       });
     }
@@ -136,24 +104,21 @@ function groupRows(rows, groupBy) {
 
   const list = Array.from(groups.values());
   list.sort((a, b) => {
-    if (groupBy === 'date') return b.sortKey - a.sortKey; // newest date first
+    if (groupBy === 'date') return b.sortKey.localeCompare(a.sortKey); // newest date first
     return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; // name A-Z
   });
   return list;
-}
-
-function toCSVField(value) {
-  const str = String(value ?? '');
-  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
 export default function AttendanceDashboard({ token, onLogout }) {
   const [from, setFrom] = useState(daysAgoISO(7));
   const [to, setTo] = useState(todayISO());
   const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
 
   const [filterId, setFilterId] = useState('');
   const [filterName, setFilterName] = useState('');
@@ -161,13 +126,13 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [groupBy, setGroupBy] = useState('date');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
-  const loadAttendance = useCallback(async () => {
+  const loadSummaries = useCallback(async () => {
     setLoading(true);
     setError('');
 
     try {
-      const params = new URLSearchParams({ from, to });
-      const res = await fetch(`/api/attendance?${params}`, {
+      const params = new URLSearchParams({ from, to, limit: '500' });
+      const res = await fetch(`/api/attendance/summary?${params}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -177,8 +142,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
       }
       if (!res.ok) throw new Error('Request failed');
 
-      const logs = await res.json();
-      setRows(groupByWorkerAndDay(logs));
+      const { summaries, total: totalCount } = await res.json();
+      setRows(summaries);
+      setTotal(totalCount);
     } catch {
       setError('Could not load attendance records. Try again.');
     } finally {
@@ -187,12 +153,13 @@ export default function AttendanceDashboard({ token, onLogout }) {
   }, [from, to, token, onLogout]);
 
   useEffect(() => {
-    loadAttendance();
-  }, [loadAttendance]);
+    loadSummaries();
+  }, [loadSummaries]);
 
-  // Triggers a fresh pull from BioStar (the same job the hourly cron runs),
-  // then reloads the currently selected date range so new punches show up
-  // without waiting for the next scheduled sync.
+  // Triggers a fresh pull from BioStar (the same job the hourly cron runs)
+  // plus a recompute of the shift-aware summaries, then reloads the
+  // currently selected date range so new punches show up without waiting
+  // for the next scheduled sync.
   async function handleRefresh() {
     setSyncing(true);
     setError('');
@@ -212,12 +179,17 @@ export default function AttendanceDashboard({ token, onLogout }) {
         throw new Error(body.error || 'Sync failed');
       }
 
-      await loadAttendance();
+      await loadSummaries();
     } catch (err) {
       setError(err.message || 'Could not sync with BioStar. Try again.');
     } finally {
       setSyncing(false);
     }
+  }
+
+  function handleExport() {
+    const params = new URLSearchParams({ from, to });
+    window.open(`/api/attendance/export?${params}`, '_blank');
   }
 
   const visibleRows = useMemo(() => {
@@ -226,8 +198,8 @@ export default function AttendanceDashboard({ token, onLogout }) {
     if (!idQuery && !nameQuery) return rows;
     return rows.filter(
       (r) =>
-        (!idQuery || r.workerId.toLowerCase().includes(idQuery)) &&
-        (!nameQuery || r.workerName.toLowerCase().includes(nameQuery))
+        (!idQuery || r.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
+        (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery))
     );
   }, [rows, filterId, filterName]);
 
@@ -249,55 +221,32 @@ export default function AttendanceDashboard({ token, onLogout }) {
     setCollapsedGroups(allCollapsed ? new Set() : new Set(groups.map((g) => g.key)));
   }
 
-  // Exports exactly what's currently on screen (filtered + sorted) — no
-  // separate BioStar/API round trip, so the CSV can never disagree with the
-  // table. Accordion collapse state is purely visual, so export ignores it.
-  function handleExport() {
-    const header = ['Employee ID', 'Worker', 'Date', 'In', 'Out', 'Status'];
-    const lines = [header.map(toCSVField).join(',')];
-
-    for (const row of sortedRows) {
-      lines.push(
-        [row.workerId, row.workerName, formatDate(row.date), formatTime(row.checkIn), formatTime(row.checkOut), getStatus(row)]
-          .map(toCSVField)
-          .join(',')
-      );
-    }
-
-    // Leading BOM so Excel (which otherwise assumes Windows-1252) reads the
-    // file as UTF-8 instead of mangling the em dash into "â€”".
-    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `casuals-attendance_${from}_to_${to}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  function renderRow(row, i) {
-    const status = getStatus(row);
+  function renderRow(row) {
+    const dateStr = row.date.slice(0, 10);
     return (
-      <tr key={i}>
-        <td className="mono" data-label="Employee ID">{row.workerId}</td>
-        <td data-label="Worker">{row.workerName}</td>
-        <td className="mono" data-label="Date">{formatDate(row.date)}</td>
+      <tr
+        key={row.id}
+        className="dash__row"
+        onClick={() => setSelectedRow(row)}
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedRow(row); }}
+      >
+        <td className="mono" data-label="Employee ID">{row.worker.biostarUserId}</td>
+        <td data-label="Worker">{row.worker.name}</td>
+        <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
+        <td data-label="Shift">{row.shift.name}</td>
         <td className="mono" data-label="In">{formatTime(row.checkIn)}</td>
         <td className="mono" data-label="Out">{formatTime(row.checkOut)}</td>
+        <td className="mono" data-label="Hours">{row.hoursWorked ?? '—'}</td>
         <td data-label="Status">
-          <span
-            className={
-              status === 'No checkout'
-                ? 'status status--pending'
-                : status === 'Late'
-                  ? 'status status--late'
-                  : 'status status--ok'
-            }
-          >
-            {status}
+          <span className={`status status--${row.status === 'no-checkout' ? 'pending' : row.status === 'late' ? 'late' : 'ok'}`}>
+            {STATUS_LABEL[row.status] || row.status}
           </span>
+          {row.hasMultiplePunches && (
+            <span className="status status--flag" title="More than one check-in or check-out was recorded — open for details">
+              ⚠ Multiple punches
+            </span>
+          )}
         </td>
       </tr>
     );
@@ -311,8 +260,10 @@ export default function AttendanceDashboard({ token, onLogout }) {
             <th>Employee ID</th>
             <th>Worker</th>
             <th>Date</th>
+            <th>Shift</th>
             <th>In</th>
             <th>Out</th>
+            <th>Hours</th>
             <th>Status</th>
           </tr>
         </thead>
@@ -385,6 +336,11 @@ export default function AttendanceDashboard({ token, onLogout }) {
       </div>
 
       {error && <div className="dash__error" role="alert">{error}</div>}
+      {!loading && !error && total > 500 && (
+        <div className="dash__error" role="status">
+          Showing the first 500 of {total} records for this range — narrow the date range to see all of them.
+        </div>
+      )}
 
       {loading ? (
         <div className="dash__empty">Loading attendance records…</div>
@@ -412,6 +368,14 @@ export default function AttendanceDashboard({ token, onLogout }) {
             );
           })}
         </div>
+      )}
+
+      {selectedRow && (
+        <PunchHistoryModal
+          token={token}
+          summary={selectedRow}
+          onClose={() => setSelectedRow(null)}
+        />
       )}
 
       <style>{`
@@ -563,8 +527,17 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding: 12px;
           border-bottom: 1px solid #1B2A40;
         }
-        .dash__table tr:hover td {
+        .dash__row {
+          cursor: pointer;
+        }
+        .dash__row:hover td, .dash__row:focus td {
           background: #16243A;
+        }
+        .dash__row:focus {
+          outline: none;
+        }
+        .dash__row:focus td:first-child {
+          box-shadow: inset 3px 0 0 #3E8E7E;
         }
         .mono {
           font-family: 'IBM Plex Mono', monospace;
@@ -573,6 +546,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
           font-size: 12px;
           padding: 3px 8px;
           border: 1px solid transparent;
+          display: inline-block;
         }
         .status--ok {
           color: #3E8E7E;
@@ -585,6 +559,11 @@ export default function AttendanceDashboard({ token, onLogout }) {
         .status--pending {
           color: #8A99AC;
           border-color: #3A4A61;
+        }
+        .status--flag {
+          color: #C9A227;
+          border-color: #8A6E1B;
+          margin-left: 6px;
         }
 
         @media (max-width: 640px) {

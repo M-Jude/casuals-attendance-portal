@@ -3,6 +3,17 @@ const { fetchPunchLogsForDate, fetchGroupUsers } = require('./biostarClient');
 
 const CASUALS_GROUP_NAME = process.env.BIOSTAR_CASUALS_GROUP_NAME || 'CASUALS';
 
+// How far back every sync run re-checks, regardless of what's already
+// synced. A rolling window (rather than "latest known date forward") means
+// a punch stamped with an earlier date than our last-seen record — plausible
+// for overnight/night-shift punches arriving out of order — still gets
+// picked up on the next run instead of being permanently missed.
+const LOOKBACK_DAYS = parseInt(process.env.SYNC_LOOKBACK_DAYS, 10) || 14;
+
+// Reject punches timestamped further in the future than this — a symptom of
+// a device with a skewed clock, not a real punch.
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
 function toDateStr(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -39,22 +50,9 @@ function mapPunchType(type) {
   return 'other'; // BREAK_START / BREAK_END / MEAL_START / MEAL_END / NONE
 }
 
-// Finds the earliest calendar date we still need to sync — the same date as
-// the most recent AttendanceLog we have (re-checked in case of late/modified
-// punches), or a short lookback window on first run. Returns a date-only
-// string (YYYY-MM-DD), never a datetime, so it can't be skewed by time-of-day.
-async function getSyncStartDate() {
-  const latest = await prisma.attendanceLog.findFirst({
-    orderBy: { timestamp: 'desc' },
-    select: { timestamp: true }
-  });
-
-  if (latest) {
-    return toDateStr(latest.timestamp);
-  }
-
+function getSyncStartDate() {
   const fallback = new Date();
-  fallback.setDate(fallback.getDate() - 7); // 7-day lookback on first run
+  fallback.setDate(fallback.getDate() - LOOKBACK_DAYS);
   return toDateStr(fallback);
 }
 
@@ -64,37 +62,73 @@ async function syncOneDate(dateStr) {
   let created = 0;
   let skipped = 0;
 
-  for (const record of records) {
-    const bioUserId = record.user_id || record.original_log?.user?.user_id;
-    const punchId = record.original_log?.id;
+  // Wrapped in a transaction so a crash partway through a day's records
+  // doesn't leave that day half-synced. Re-running is still safe either way
+  // (every write is an upsert keyed on biostarEventId), but this avoids
+  // needing a re-run to reach consistency.
+  await prisma.$transaction(async (tx) => {
+    for (const record of records) {
+      // Field shape confirmed against the live server (see
+      // test/mockSyncTest.js): top-level user_id, plus an original_log
+      // wrapper carrying the punch id and a duplicate of the user_id.
+      const bioUserId = record.user_id || record.original_log?.user?.user_id;
+      const punchId = record.original_log?.id;
 
-    if (!bioUserId || !punchId) {
-      skipped++;
-      continue; // malformed record — skip rather than crash the whole sync
-    }
-
-    const worker = await prisma.casualWorker.findUnique({
-      where: { biostarUserId: String(bioUserId) }
-    });
-
-    if (!worker) {
-      skipped++;
-      continue; // worker not yet provisioned in our table — flag for review
-    }
-
-    await prisma.attendanceLog.upsert({
-      where: { biostarEventId: String(punchId) },
-      update: {},
-      create: {
-        casualWorkerId: worker.id,
-        biostarEventId: String(punchId),
-        eventType: mapPunchType(record.type),
-        timestamp: new Date(record.device_datetime),
-        rawPayload: record
+      if (!bioUserId || !punchId) {
+        skipped++;
+        continue; // malformed record — skip rather than crash the whole sync
       }
-    });
-    created++;
-  }
+
+      const worker = await tx.casualWorker.findUnique({
+        where: { biostarUserId: String(bioUserId) }
+      });
+
+      if (!worker) {
+        skipped++;
+        continue; // worker not yet provisioned in our table — flag for review
+      }
+
+      if (worker.status !== 'active') {
+        skipped++;
+        continue; // worker marked inactive — don't sync new punches for them
+      }
+
+      const timestamp = new Date(record.device_datetime);
+      if (Number.isNaN(timestamp.getTime())) {
+        skipped++;
+        continue; // unparseable timestamp
+      }
+      if (timestamp.getTime() - Date.now() > MAX_FUTURE_SKEW_MS) {
+        console.warn(`Skipping punch ${punchId} — timestamp ${timestamp.toISOString()} is in the future (device clock skew?).`);
+        skipped++;
+        continue;
+      }
+
+      const eventType = mapPunchType(record.type);
+
+      // update (not just create) so a correction BioStar makes to an
+      // already-synced punch — this endpoint is literally named
+      // punch_logs/modified — actually gets pulled in on the next sync,
+      // rather than being silently ignored forever.
+      await tx.attendanceLog.upsert({
+        where: { biostarEventId: String(punchId) },
+        update: {
+          eventType,
+          timestamp,
+          rawPayload: record,
+          syncedAt: new Date()
+        },
+        create: {
+          casualWorkerId: worker.id,
+          biostarEventId: String(punchId),
+          eventType,
+          timestamp,
+          rawPayload: record
+        }
+      });
+      created++;
+    }
+  });
 
   return { created, skipped };
 }
@@ -102,7 +136,7 @@ async function syncOneDate(dateStr) {
 async function syncAttendance() {
   await provisionCasualWorkers();
 
-  const startDateStr = await getSyncStartDate();
+  const startDateStr = getSyncStartDate();
   const todayStr = toDateStr(new Date());
 
   let totalCreated = 0;
@@ -122,7 +156,7 @@ async function syncAttendance() {
     cursor = toDateStr(next);
   }
 
-  console.log(`Sync complete: ${totalCreated} punches processed, ${totalSkipped} skipped (unrecognized worker or malformed record).`);
+  console.log(`Sync complete: ${totalCreated} punches processed/updated, ${totalSkipped} skipped (unrecognized worker, inactive worker, or malformed record).`);
 }
 
 module.exports = { syncAttendance };
