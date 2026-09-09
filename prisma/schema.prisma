@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model CasualWorker {
+  id                Int      @id @default(autoincrement())
+  biostarUserId     String   @unique
+  name              String
+  subcontractorName String   @default("Subcontractor A") // seam for future multi-tenant support
+  startDate         DateTime
+  status            String   @default("active") // active | inactive
+
+  attendanceLogs    AttendanceLog[]
+}
+
+model AttendanceLog {
+  id             Int      @id @default(autoincrement())
+  casualWorkerId Int
+  worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
+  biostarEventId String   @unique // prevents duplicate rows on repeated sync runs
+  eventType      String   // check-in | check-out | other
+  timestamp      DateTime
+  rawPayload     Json?    // raw BioStar event, kept for debugging/audit
+  syncedAt       DateTime @default(now())
+
+  @@index([casualWorkerId, timestamp])
+}
+
+model PortalUser {
+  id                Int      @id @default(autoincrement())
+  email             String   @unique
+  passwordHash      String
+  subcontractorName String   @default("Subcontractor A")
+  createdAt         DateTime @default(now())
+}
