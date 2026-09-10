@@ -14,10 +14,13 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
 
 - `sync/` — logs into BioStar's TA (Time & Attendance) API, provisions
   `CasualWorker` rows from BioStar's Casuals group membership, pulls daily
-  punch logs, writes matching records into `AttendanceLog`, and computes
-  shift-aware daily attendance summaries into `DailyAttendanceSummary`.
+  punch logs, writes matching records into `AttendanceLog`, computes
+  shift-aware daily attendance summaries into `DailyAttendanceSummary`
+  (`computeDailySummaries.js`), and parses/imports the uploaded shift roster
+  (`shiftRoster.js`).
 - `routes/` — Express API: login, raw attendance read, shift-aware summary
-  read, punch history, manual sync trigger, CSV export.
+  read, punch history, manual sync trigger, CSV export, shift roster
+  template/upload.
 - `middleware/` — JWT verification for portal accounts.
 - `scripts/seedPortalUser.js` — CLI-only account provisioning (no
   self-service signup; there are only 1–2 subcontractor accounts).
@@ -25,7 +28,7 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
 - `prisma/schema.prisma` — data model (`CasualWorker`, `AttendanceLog`,
   `PortalUser`, `Shift`, `ShiftAssignment`, `DailyAttendanceSummary`).
 - `src/` — React frontend (login screen + attendance dashboard + punch
-  history modal).
+  history modal + shift roster upload modal).
 
 ## Setup
 
@@ -58,9 +61,9 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
    ```bash
    npm run seed:shifts
    ```
-   Seeds `Shift` rows for Day (08:00–17:00) and Night (17:00–08:00). No
-   roster/assignment table needs maintaining — see "Shift-aware attendance"
-   below for why.
+   Seeds `Shift` rows for Day (08:00–17:00) and Night (17:00–08:00).
+   Uploading a shift roster is optional but recommended — see "Shift-aware
+   attendance" below for what it adds.
 
 5. **Provision the subcontractor's portal login**
    ```bash
@@ -97,6 +100,10 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
 5. Load the React app, sign in, confirm the dashboard renders, the date
    filter refetches correctly, and clicking a row opens its punch history.
 6. Click "Export CSV" and confirm the file downloads with the expected rows.
+7. Click "Upload Roster", download the template, fill in a row or two using
+   real Employee IDs and a near-future date, and upload it back — confirm
+   the response reports it imported, and that a `no-show` row for that
+   worker/date shows up on the dashboard if they have no punches yet.
 
 ## Shift-aware attendance
 
@@ -108,13 +115,48 @@ Casual workers rotate between two fixed shifts:
 Together these tile a full 24 hours with a hard boundary and no gap.
 `sync/computeDailySummaries.js` classifies each raw punch to whichever
 shift's start (for check-ins) or end (for check-outs) it's closest to in
-time-of-day — **no shift roster or assignment table needs to be
-maintained.** A worker doesn't need to be told in advance "you're on Night
-today"; the punch itself carries that information, since a 17:xx check-in
-is unambiguously a Night start and an 08:xx check-out is unambiguously a
-Night end. `ShiftAssignment` exists in the schema only as a future
-manual-override point (e.g. to resolve a genuinely ambiguous punch by hand)
-and is safe to leave empty.
+time-of-day. A worker doesn't need to be told in advance "you're on Night
+today" for their hours to compute correctly; the punch itself carries that
+information, since a 17:xx check-in is unambiguously a Night start and an
+08:xx check-out is unambiguously a Night end. This punch-classification
+layer is unchanged by whether a roster is uploaded, and is what makes the
+system still work for a subcontractor who never uploads one.
+
+### Shift roster upload
+
+Uploading a roster (`Upload Roster` in the dashboard, or
+`POST /api/shifts/roster/upload`) fills `ShiftAssignment` with one row per
+worker per scheduled shift date, and layers it on top of the punch
+classification above as the source of truth for *who was expected to work
+which shift*:
+
+- **No-show detection.** A roster entry with zero matching punches produces
+  a `no-show` summary row — impossible without a roster, since a worker with
+  literally no punches otherwise produces no row at all (see "still
+  outstanding" below for when this doesn't apply).
+- **Roster vs. actual mismatch.** If a worker's real punches classify to a
+  different shift than the roster named for that date, the summary is still
+  recorded under the shift they actually worked (so hours/lateness stay
+  correct), but `rosteredShiftId` is set to what was rostered — surfaced in
+  the dashboard as a "rostered: X" note — so the discrepancy is visible
+  rather than silently dropped.
+- **Nothing else changes.** The roster does not override which punches pair
+  into a check-in/check-out, or resolve which shift a punch belongs to —
+  that's still handled by time-of-day classification, which is already
+  unambiguous for realistic arrival/departure variance (see below).
+
+The template downloaded from `GET /api/shifts/roster/template` (an .xlsx
+with an `Instructions` sheet) is the exact format the parser expects:
+`Employee ID`, `Employee Name` (optional, for reference only), `Date`
+(`YYYY-MM-DD` — for a Night shift, the date the shift *starts*, i.e. the
+evening, not the following morning), `Shift` (must match a configured
+`Shift.name`). Re-uploading a row for the same Employee ID + Date replaces
+the previous assignment for that date; a bad row (unknown worker, unknown
+shift, bad date) is reported back per-row without blocking the rest of the
+file from importing. Uploads are scoped to the logged-in subcontractor —
+an Employee ID belonging to another subcontractor's worker is rejected, not
+silently imported. `sync/shiftRoster.js` has the parsing/validation logic;
+`test/shiftRosterTest.js` covers it.
 
 This also resolves what would otherwise be a real edge case: because the
 two shifts share a boundary with zero gap, a worker rotated straight from
@@ -136,18 +178,30 @@ check-out is flagged `hasMultiplePunches`, visible in the dashboard as a
 "⚠ Multiple punches" tag, so FILO's inherent inability to distinguish noise
 from a genuine gap is surfaced rather than silently trusted.
 
-`computeSummaries()` runs automatically after every sync (see `server.js`)
-and after every manual "Refresh" (see `routes/attendance.js`), writing to
+`status` is `'early'` | `'on-time'` | `'late'` | `'no-checkout'` | `'no-show'`
+and describes check-in timing/presence only. `earlyCheckOut` is a separate
+boolean (checked out more than `graceMinutes` before shift end) — kept
+independent of `status` because a worker can be late *and* leave early at
+once, the same reason `hasMultiplePunches` already rides alongside `status`
+rather than being folded into it. `early`/`late`/early-checkout are all
+measured against the same `graceMinutes` tolerance, symmetrically on both
+sides of the shift boundary.
+
+`computeSummaries()` runs automatically after every sync (see `server.js`),
+after every manual "Refresh" (see `routes/attendance.js`), and after every
+roster upload (see `routes/shiftRoster.js`), writing to
 `DailyAttendanceSummary` — this is what the dashboard reads for hours-worked
 and lateness (`GET /api/attendance/summary`), not raw `AttendanceLog` rows
 directly. Clicking a row opens the punch history modal
 (`GET /api/attendance/punches`), showing every raw punch behind it tagged
 `Used` or `Ignored (duplicate)`.
 
-Deliberately out of scope for now (per discussion with UCAA): absence
-tracking (a worker with zero punches produces no summary row, not a
-flagged absence) and overtime calculation (`hoursWorked` is informational
-only, no OT multiplier or threshold logic).
+Deliberately out of scope for now (per discussion with UCAA): overtime
+calculation (`hoursWorked` is informational only, no OT multiplier or
+threshold logic). Absence tracking is resolved for rostered workers (a
+roster entry with zero punches becomes a `no-show` row) but a worker with
+zero punches on a date with **no roster entry** still produces no summary
+row at all — there's no way to know they were expected to work without one.
 
 ## Notes / resolved and outstanding
 
@@ -207,15 +261,31 @@ only, no OT multiplier or threshold logic).
   half-synced (re-running was already safe either way, since every write is
   an idempotent upsert — this just removes the need to).
 - **No shift/overtime/absentee logic** — resolved for the shift/hours-
-  visibility part; see "Shift-aware attendance" above. Absence tracking and
-  overtime calculation remain deliberately out of scope (see below).
+  visibility part; see "Shift-aware attendance" above. Overtime calculation
+  remains deliberately out of scope (see below).
+- **No absence tracking fixed, for rostered workers:** uploading a shift
+  roster (`Upload Roster` / `POST /api/shifts/roster/upload`) makes
+  `ShiftAssignment` the source of truth for who was expected to work which
+  shift — a roster entry with zero matching punches now produces a
+  `no-show` summary row, and a mismatch between the rostered shift and what
+  a worker's punches actually show is flagged via `rosteredShiftId` rather
+  than silently overwritten. `status` also gained `'early'` (check-in well
+  before shift start) alongside the existing `'late'`/`'no-checkout'`, and
+  check-out timing is now tracked separately via the `earlyCheckOut` flag.
+  See "Shift-aware attendance" above.
 
 **Still outstanding:**
 
-- No absence tracking. A worker with zero punches in a shift produces no
-  summary row at all, rather than a flagged absence.
+- Absence tracking only works for rostered worker/dates. A worker with zero
+  punches on a date with no roster entry still produces no summary row at
+  all, rather than a flagged absence — there's no way to know they were
+  expected to work without a roster.
 - No overtime calculation. `hoursWorked` is informational only; there is no
   OT multiplier, threshold, or pay-code logic.
+- The roster upload has no admin/role distinction — any authenticated
+  portal account for a subcontractor can upload a roster for that
+  subcontractor's own workers (same trust boundary as the rest of the API;
+  there's still only 1–2 accounts total).
 - The classification approach assumes realistic arrival/departure variance
   (minutes to a couple of hours from a shift boundary). A punch literally
   half a shift early or late would be a data-quality problem under any

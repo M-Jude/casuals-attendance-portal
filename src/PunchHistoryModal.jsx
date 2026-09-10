@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { STATUS_LABEL, statusClassName } from './shiftStatus';
 
 function formatDateTime(ts) {
   return new Date(ts).toLocaleString([], {
@@ -69,14 +70,20 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
         <div className="modal__summary">
           <div className="modal__stat">
             <span className="modal__stat-label">Status</span>
-            <span className={`status status--${summary.status === 'no-checkout' ? 'pending' : summary.status === 'late' ? 'late' : 'ok'}`}>
-              {summary.status === 'on-time' ? 'On time' : summary.status === 'late' ? 'Late' : 'No checkout'}
+            <span className={`status status--${statusClassName(summary.status)}`}>
+              {STATUS_LABEL[summary.status] || summary.status}
             </span>
           </div>
           <div className="modal__stat">
             <span className="modal__stat-label">Hours worked</span>
             <span className="mono">{summary.hoursWorked ?? '—'}</span>
           </div>
+          {summary.rosteredShift && summary.rosteredShift.id !== summary.shift.id && (
+            <div className="modal__flag">⚠ Rostered for {summary.rosteredShift.name}, but punches match {summary.shift.name}.</div>
+          )}
+          {summary.earlyCheckOut && (
+            <div className="modal__flag">⚠ Checked out well before the shift's scheduled end.</div>
+          )}
           {summary.hasMultiplePunches && (
             <div className="modal__flag">⚠ Multiple check-ins or check-outs were recorded for this shift — see below.</div>
           )}
@@ -253,6 +260,14 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
         .status--pending {
           color: #8A99AC;
           border-color: #3A4A61;
+        }
+        .status--early {
+          color: #5B8DC9;
+          border-color: #2E4E77;
+        }
+        .status--critical {
+          color: #C9535A;
+          border-color: #7A3236;
         }
       `}</style>
     </div>

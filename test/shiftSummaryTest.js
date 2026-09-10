@@ -7,6 +7,7 @@ const DAY_SHIFT = { id: 1, name: 'Day', startTime: '08:00', endTime: '17:00', gr
 const NIGHT_SHIFT = { id: 2, name: 'Night', startTime: '17:00', endTime: '08:00', graceMinutes: 15 };
 
 let fakeAttendanceLogs = [];
+let fakeShiftAssignments = [];
 const fakeSummaries = [];
 
 const fakePrisma = {
@@ -19,6 +20,10 @@ const fakePrisma = {
           p.timestamp >= where.timestamp.gte && p.timestamp <= where.timestamp.lte
         )
         .sort((a, b) => a.timestamp - b.timestamp)
+  },
+  shiftAssignment: {
+    findMany: async ({ where }) =>
+      fakeShiftAssignments.filter((a) => a.date >= where.date.gte && a.date <= where.date.lte)
   },
   dailyAttendanceSummary: {
     upsert: async ({ where, create }) => {
@@ -42,7 +47,7 @@ function injectFakeModule(resolvedPath, exportsObj) {
 }
 injectFakeModule(prismaPath, fakePrisma);
 
-const { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes } = require('../sync/computeDailySummaries');
+const { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes, computeStatus } = require('../sync/computeDailySummaries');
 
 function utc(dateStr, hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -122,6 +127,34 @@ async function run() {
     { casualWorkerId: 6, eventType: 'other', timestamp: utc(D1, '04:58') }  // 07:58 EAT D+1 — untyped
   );
 
+  // --- ROSTER-DRIVEN CASES ---
+  function assignment(casualWorkerId, dateStr, shift) {
+    return { casualWorkerId, date: new Date(`${dateStr}T00:00:00.000Z`), shiftId: shift.id };
+  }
+
+  fakeShiftAssignments = [
+    assignment(7, D, DAY_SHIFT),   // worker 7: rostered Day, arrives well early
+    assignment(8, D, DAY_SHIFT),   // worker 8: rostered Day, leaves well early
+    assignment(9, D, DAY_SHIFT),   // worker 9: rostered Day, never punches — no-show
+    assignment(10, D, NIGHT_SHIFT) // worker 10: rostered Night, but actually punches a Day pattern — mismatch
+  ];
+
+  fakeAttendanceLogs.push(
+    // Worker 7: check-in 3h before Day start (well beyond the 15min grace) — 'early'
+    { casualWorkerId: 7, eventType: 'check-in', timestamp: utc(D, '02:00') },  // 05:00 EAT
+    { casualWorkerId: 7, eventType: 'check-out', timestamp: utc(D, '14:05') }, // 17:05 EAT — on-time end
+
+    // Worker 8: on-time check-in, but checks out 2h before Day end — earlyCheckOut
+    { casualWorkerId: 8, eventType: 'check-in', timestamp: utc(D, '04:58') },  // 07:58 EAT
+    { casualWorkerId: 8, eventType: 'check-out', timestamp: utc(D, '12:00') }, // 15:00 EAT
+
+    // Worker 9: no punches at all — covered only by fakeShiftAssignments above
+
+    // Worker 10: rostered Night(D), but punches look exactly like an ordinary Day shift
+    { casualWorkerId: 10, eventType: 'check-in', timestamp: utc(D, '04:58') },  // 07:58 EAT
+    { casualWorkerId: 10, eventType: 'check-out', timestamp: utc(D, '14:03') }  // 17:03 EAT
+  );
+
   await computeSummaries(D, D1);
 
   console.log('\nSummaries:');
@@ -198,6 +231,46 @@ async function run() {
   checks.push(['worker 3 Night-leg punch history has exactly 2 punches (its own check-in/out only)', w3NightPunches.length === 2]);
   checks.push(['worker 3 Day-leg punch history has exactly 2 punches (its own check-in/out only)', w3DayPunches.length === 2]);
   checks.push(['worker 3 Night-leg does not include the Day check-in', !w3NightPunches.some((p) => p.timestamp.getTime() === utc(D1, '05:05').getTime())]);
+
+  // --- ROSTER-DRIVEN: worker 7, arrives 3h early ---
+  const w7 = summaryFor(7, D);
+  checks.push(['ROSTER: worker 7 status is "early" (arrived well before shift start)', w7?.status === 'early']);
+  checks.push(['ROSTER: worker 7 not flagged earlyCheckOut', w7?.earlyCheckOut === false]);
+  checks.push(['ROSTER: worker 7 rosteredShiftId matches worked shift (no mismatch)', w7?.rosteredShiftId === DAY_SHIFT.id && w7?.shiftId === DAY_SHIFT.id]);
+
+  // --- ROSTER-DRIVEN: worker 8, leaves 2h early ---
+  const w8 = summaryFor(8, D);
+  checks.push(['ROSTER: worker 8 status is "on-time" (check-in itself was on time)', w8?.status === 'on-time']);
+  checks.push(['ROSTER: worker 8 flagged earlyCheckOut', w8?.earlyCheckOut === true]);
+
+  // --- ROSTER-DRIVEN: worker 9, rostered but never punches — no-show ---
+  const w9 = summaryFor(9, D);
+  checks.push(['ROSTER: worker 9 gets a "no-show" row despite zero punches', w9?.status === 'no-show']);
+  checks.push(['ROSTER: worker 9 no-show row has null checkIn/checkOut/hours', w9?.checkIn === null && w9?.checkOut === null && w9?.hoursWorked === null]);
+  checks.push(['ROSTER: worker 9 no-show row carries the rostered shift as both shiftId and rosteredShiftId', w9?.shiftId === DAY_SHIFT.id && w9?.rosteredShiftId === DAY_SHIFT.id]);
+
+  // --- ROSTER-DRIVEN: worker 10, rostered Night but actually punched a Day pattern ---
+  const w10 = summaryFor(10, D);
+  checks.push(['ROSTER MISMATCH: worker 10 is recorded under the shift punches actually match (Day)', w10?.shiftId === DAY_SHIFT.id]);
+  checks.push(['ROSTER MISMATCH: worker 10 rosteredShiftId still reflects what was rostered (Night)', w10?.rosteredShiftId === NIGHT_SHIFT.id]);
+  checks.push(['ROSTER MISMATCH: worker 10 is NOT also reported as a no-show (they did show up)', w10?.status !== 'no-show']);
+  checks.push(['ROSTER MISMATCH: worker 10 status computed against the shift they actually worked', w10?.status === 'on-time']);
+
+  // --- Direct unit tests: computeStatus ---
+  const shiftStartUtc = utc(D, '05:00'); // 08:00 EAT
+  const shiftEndUtc = utc(D, '14:00');   // 17:00 EAT
+  const r1 = computeStatus({ checkIn: utc(D, '05:05'), checkOut: utc(D, '14:00'), shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: check-in 5min after start (within grace) is on-time', r1.status === 'on-time']);
+  const r2 = computeStatus({ checkIn: utc(D, '05:30'), checkOut: utc(D, '14:00'), shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: check-in 30min after start (beyond grace) is late', r2.status === 'late']);
+  const r3 = computeStatus({ checkIn: utc(D, '04:30'), checkOut: utc(D, '14:00'), shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: check-in 30min before start (beyond grace) is early', r3.status === 'early']);
+  const r4 = computeStatus({ checkIn: utc(D, '05:00'), checkOut: utc(D, '13:30'), shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: check-out 30min before end (beyond grace) flags earlyCheckOut', r4.earlyCheckOut === true]);
+  const r5 = computeStatus({ checkIn: utc(D, '05:00'), checkOut: utc(D, '13:50'), shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: check-out 10min before end (within grace) does NOT flag earlyCheckOut', r5.earlyCheckOut === false]);
+  const r6 = computeStatus({ checkIn: null, checkOut: null, shiftStartUtc, shiftEndUtc, graceMinutes: 15 });
+  checks.push(['computeStatus: no check-in returns null status (caller decides no-show vs skip)', r6.status === null]);
 
   console.log('\nChecks:');
   let allPassed = true;

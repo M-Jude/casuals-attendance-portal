@@ -126,18 +126,48 @@ function classifyPunch(punch, shifts) {
   return { shift: best, anchorDateStr };
 }
 
-function computeStatus({ checkIn, checkOut, shiftStartUtc, graceMinutes }) {
-  if (!checkIn) return null; // no check-in at all — absence tracking is out of scope for now, skip entirely
-  if (!checkOut) return 'no-checkout';
+// UTC start/end instants for a shift instance anchored on anchorDateStr,
+// handling the overnight case (end date is the following calendar day).
+function shiftBoundariesUtc(anchorDateStr, shift) {
+  const isOvernight = shift.endTime <= shift.startTime;
+  const startUtc = eatToUtc(anchorDateStr, shift.startTime);
+  const endDateStr = isOvernight ? addDaysStr(anchorDateStr, 1) : anchorDateStr;
+  const endUtc = eatToUtc(endDateStr, shift.endTime);
+  return { startUtc, endUtc };
+}
+
+// Check-in timing and check-out timing are independent facts (you can be
+// late AND leave early), so they're reported separately: `status` for
+// check-in timing/presence, `earlyCheckOut` as its own flag — mirroring how
+// `hasMultiplePunches` already rides alongside `status` rather than being
+// folded into it. graceMinutes is applied symmetrically: more than
+// graceMinutes before shiftStart is "early", more than graceMinutes after is
+// "late", and the same window (measured from shiftEnd) marks an early
+// checkout.
+function computeStatus({ checkIn, checkOut, shiftStartUtc, shiftEndUtc, graceMinutes }) {
+  if (!checkIn) return { status: null, earlyCheckOut: false }; // caller decides no-show vs "not enough data to report" based on roster coverage
+  if (!checkOut) return { status: 'no-checkout', earlyCheckOut: false };
 
   const graceMs = graceMinutes * 60 * 1000;
-  if (checkIn.getTime() > shiftStartUtc.getTime() + graceMs) return 'late';
-  return 'on-time';
+  const checkInDiff = checkIn.getTime() - shiftStartUtc.getTime();
+  const status = checkInDiff > graceMs ? 'late' : checkInDiff < -graceMs ? 'early' : 'on-time';
+  const earlyCheckOut = checkOut.getTime() < shiftEndUtc.getTime() - graceMs;
+
+  return { status, earlyCheckOut };
 }
 
 // Computes and upserts DailyAttendanceSummary rows from raw punches in
-// [fromDateStr, toDateStr] (inclusive, EAT calendar dates). No
-// ShiftAssignment/roster is read — each punch is classified independently.
+// [fromDateStr, toDateStr] (inclusive, EAT calendar dates). Each punch is
+// still classified independently by time-of-day (see classifyPunch) — the
+// uploaded ShiftAssignment roster (sync/shiftRoster.js) is layered on top
+// as the source of truth for who was EXPECTED to work, not used to override
+// how real punches get paired. This means: a roster entry with zero
+// matching punch activity produces a 'no-show' row (impossible to detect
+// without a roster — see README "Shift-aware attendance"), and a roster
+// entry whose date's punches classify to a *different* shift than rostered
+// still gets recorded under the shift the punches actually match, with
+// `rosteredShiftId` set separately so the mismatch is visible rather than
+// silently overwritten.
 async function computeSummaries(fromDateStr, toDateStr) {
   const shifts = await prisma.shift.findMany();
   if (shifts.length === 0) {
@@ -151,10 +181,25 @@ async function computeSummaries(fromDateStr, toDateStr) {
   const queryStart = eatToUtc(addDaysStr(fromDateStr, -1), '00:00');
   const queryEnd = eatToUtc(addDaysStr(toDateStr, 1), '23:59');
 
-  const rawPunches = await prisma.attendanceLog.findMany({
-    where: { timestamp: { gte: queryStart, lte: queryEnd } },
-    orderBy: { timestamp: 'asc' }
-  });
+  const [rawPunches, rosterAssignments] = await Promise.all([
+    prisma.attendanceLog.findMany({
+      where: { timestamp: { gte: queryStart, lte: queryEnd } },
+      orderBy: { timestamp: 'asc' }
+    }),
+    prisma.shiftAssignment.findMany({
+      where: {
+        date: {
+          gte: new Date(`${addDaysStr(fromDateStr, -1)}T00:00:00.000Z`),
+          lte: new Date(`${addDaysStr(toDateStr, 1)}T00:00:00.000Z`)
+        }
+      }
+    })
+  ]);
+
+  const rosterMap = new Map(); // `${workerId}|${dateStr}` -> shiftId
+  for (const a of rosterAssignments) {
+    rosterMap.set(`${a.casualWorkerId}|${a.date.toISOString().slice(0, 10)}`, a.shiftId);
+  }
 
   // Alternation state is per-worker, so split before assigning effective
   // types, then flatten back into one timestamp-ascending list.
@@ -194,13 +239,21 @@ async function computeSummaries(fromDateStr, toDateStr) {
     }
   }
 
+  // Any (worker, date) with at least one matched punch, regardless of which
+  // shift it classified to or whether it paired into a full check-in +
+  // check-out — used below to tell a genuine no-show apart from a rostered
+  // day the worker did show up for (just with incomplete/odd punches).
+  const coveredWorkerDates = new Set(
+    Array.from(groups.values()).map((g) => `${g.casualWorkerId}|${g.anchorDateStr}`)
+  );
+
   let computed = 0;
   let skippedNoCheckIn = 0;
 
   for (const g of groups.values()) {
-    const shiftStartUtc = eatToUtc(g.anchorDateStr, g.shift.startTime);
-    const status = computeStatus({
-      checkIn: g.checkIn, checkOut: g.checkOut, shiftStartUtc, graceMinutes: g.shift.graceMinutes
+    const { startUtc: shiftStartUtc, endUtc: shiftEndUtc } = shiftBoundariesUtc(g.anchorDateStr, g.shift);
+    const { status, earlyCheckOut } = computeStatus({
+      checkIn: g.checkIn, checkOut: g.checkOut, shiftStartUtc, shiftEndUtc, graceMinutes: g.shift.graceMinutes
     });
 
     if (!status) {
@@ -217,23 +270,51 @@ async function computeSummaries(fromDateStr, toDateStr) {
     // FILO can't distinguish from noise — either way it's worth surfacing
     // for a human to glance at, rather than silently trusting the hours.
     const hasMultiplePunches = g.checkInCount > 1 || g.checkOutCount > 1;
+    const rosteredShiftId = rosterMap.get(`${g.casualWorkerId}|${g.anchorDateStr}`) ?? null;
 
     const dateKey = new Date(`${g.anchorDateStr}T00:00:00.000Z`);
 
     await prisma.dailyAttendanceSummary.upsert({
       where: { casualWorkerId_date: { casualWorkerId: g.casualWorkerId, date: dateKey } },
-      update: { shiftId: g.shift.id, checkIn: g.checkIn, checkOut: g.checkOut, hoursWorked, status, hasMultiplePunches, computedAt: new Date() },
+      update: { shiftId: g.shift.id, rosteredShiftId, checkIn: g.checkIn, checkOut: g.checkOut, hoursWorked, status, hasMultiplePunches, earlyCheckOut, computedAt: new Date() },
       create: {
         casualWorkerId: g.casualWorkerId,
         date: dateKey,
         shiftId: g.shift.id,
-        checkIn: g.checkIn, checkOut: g.checkOut, hoursWorked, status, hasMultiplePunches
+        rosteredShiftId,
+        checkIn: g.checkIn, checkOut: g.checkOut, hoursWorked, status, hasMultiplePunches, earlyCheckOut
       }
     });
     computed++;
   }
 
-  console.log(`Daily summaries computed: ${computed}, skipped (no check-in in group): ${skippedNoCheckIn}.`);
+  // Roster entries with no matching punch activity at all — a no-show,
+  // only knowable now that a roster says someone was actually expected.
+  let noShows = 0;
+  for (const a of rosterAssignments) {
+    const dateStr = a.date.toISOString().slice(0, 10);
+    if (dateStr < fromDateStr || dateStr > toDateStr) continue;
+    if (coveredWorkerDates.has(`${a.casualWorkerId}|${dateStr}`)) continue;
+
+    const dateKey = new Date(`${dateStr}T00:00:00.000Z`);
+    await prisma.dailyAttendanceSummary.upsert({
+      where: { casualWorkerId_date: { casualWorkerId: a.casualWorkerId, date: dateKey } },
+      update: {
+        shiftId: a.shiftId, rosteredShiftId: a.shiftId,
+        checkIn: null, checkOut: null, hoursWorked: null, status: 'no-show',
+        hasMultiplePunches: false, earlyCheckOut: false, computedAt: new Date()
+      },
+      create: {
+        casualWorkerId: a.casualWorkerId, date: dateKey,
+        shiftId: a.shiftId, rosteredShiftId: a.shiftId,
+        checkIn: null, checkOut: null, hoursWorked: null, status: 'no-show',
+        hasMultiplePunches: false, earlyCheckOut: false
+      }
+    });
+    noShows++;
+  }
+
+  console.log(`Daily summaries computed: ${computed}, no-shows: ${noShows}, skipped (no check-in in group): ${skippedNoCheckIn}.`);
 }
 
 // Reconstructs the exact set of raw punches that fed a given
@@ -282,4 +363,4 @@ async function getPunchDetailForSummary(casualWorkerId, shiftId, anchorDateStr) 
   }));
 }
 
-module.exports = { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes };
+module.exports = { computeSummaries, classifyPunch, circularMinuteDistance, getPunchDetailForSummary, assignEffectiveTypes, computeStatus };

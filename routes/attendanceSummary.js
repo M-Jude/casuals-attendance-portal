@@ -29,7 +29,8 @@ router.get('/attendance/summary', authenticate, async (req, res) => {
         where,
         include: {
           worker: { select: { id: true, name: true, biostarUserId: true } },
-          shift: { select: { id: true, name: true } }
+          shift: { select: { id: true, name: true } },
+          rosteredShift: { select: { id: true, name: true } }
         },
         orderBy: { date: 'desc' },
         take: limit,

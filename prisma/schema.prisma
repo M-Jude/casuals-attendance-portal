@@ -50,15 +50,20 @@ model Shift {
   endTime      String   // "HH:mm", business-local
   graceMinutes Int      @default(15) // tolerance before a check-in counts as "late"
 
-  assignments  ShiftAssignment[]
-  summaries    DailyAttendanceSummary[]
+  assignments        ShiftAssignment[]
+  summaries          DailyAttendanceSummary[]
+  rosteredSummaries  DailyAttendanceSummary[] @relation("RosteredShiftSummaries")
 }
 
-// Not used by the default computation path (sync/computeDailySummaries.js) —
-// shifts are inferred per-punch from time-of-day instead, so no roster needs
-// importing. Kept in the schema as a future override point only, in case a
-// manual roster ever becomes useful (e.g. to resolve a genuinely ambiguous
-// punch). Safe to leave empty.
+// The uploaded shift roster — one row per worker per date, naming which
+// shift they were scheduled for. Populated by POST /api/shifts/roster/upload
+// (sync/shiftRoster.js), not hand-maintained. `date` is the shift's anchor
+// date: the calendar day the shift STARTS (for Night, that's the evening
+// date, not the following morning — same convention as
+// DailyAttendanceSummary.date). This is now the authoritative source for
+// "who was expected on what shift" — see sync/computeDailySummaries.js,
+// which cross-references it to detect no-shows and roster/actual mismatches,
+// while still deriving check-in/check-out times from real punches.
 model ShiftAssignment {
   id             Int      @id @default(autoincrement())
   casualWorkerId Int
@@ -66,6 +71,7 @@ model ShiftAssignment {
   date           DateTime     // date-only, stored at UTC midnight
   shiftId        Int
   shift          Shift        @relation(fields: [shiftId], references: [id])
+  uploadedAt     DateTime @default(now())
 
   @@unique([casualWorkerId, date])
 }
@@ -78,13 +84,16 @@ model DailyAttendanceSummary {
   casualWorkerId     Int
   worker             CasualWorker @relation(fields: [casualWorkerId], references: [id])
   date               DateTime     // the shift's anchor date
-  shiftId            Int
+  shiftId            Int          // the shift punches were actually matched against
   shift              Shift        @relation(fields: [shiftId], references: [id])
+  rosteredShiftId    Int?         // the shift ShiftAssignment says they were expected on, if any — null when this date/worker has no roster entry; differs from shiftId when the worker punched under a different shift than rostered
+  rosteredShift      Shift?       @relation("RosteredShiftSummaries", fields: [rosteredShiftId], references: [id])
   checkIn            DateTime?
   checkOut           DateTime?
   hoursWorked        Float?       // informational only — no overtime logic applied
-  status             String       // 'on-time' | 'late' | 'no-checkout' | 'no-show'
+  status             String       // 'early' | 'on-time' | 'late' | 'no-checkout' | 'no-show'
   hasMultiplePunches Boolean  @default(false) // >1 check-in or check-out in this shift — worth a manual glance, since FILO can't tell noise from a real gap
+  earlyCheckOut      Boolean  @default(false) // checked out more than graceMinutes before shift end — independent of `status`, which already tracks check-in timing
   computedAt         DateTime @default(now())
 
   @@unique([casualWorkerId, date])

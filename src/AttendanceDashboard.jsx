@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
+import ShiftRosterUploadModal from './ShiftRosterUploadModal';
+import { STATUS_LABEL, STATUS_RANK, statusClassName } from './shiftStatus';
+import { downloadAuthenticated } from './downloadFile';
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -23,14 +26,6 @@ function formatDate(dateStr) {
     day: '2-digit', month: 'short', timeZone: 'UTC'
   });
 }
-
-const STATUS_LABEL = {
-  'on-time': 'On time',
-  late: 'Late',
-  'no-checkout': 'No checkout'
-};
-
-const STATUS_RANK = { late: 0, 'no-checkout': 1, 'on-time': 2 };
 
 const SORT_OPTIONS = [
   { value: 'date-desc', label: 'Date (newest first)' },
@@ -119,6 +114,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
+  const [rosterModalOpen, setRosterModalOpen] = useState(false);
 
   const [filterId, setFilterId] = useState('');
   const [filterName, setFilterName] = useState('');
@@ -187,9 +183,14 @@ export default function AttendanceDashboard({ token, onLogout }) {
     }
   }
 
-  function handleExport() {
+  async function handleExport() {
+    setError('');
     const params = new URLSearchParams({ from, to });
-    window.open(`/api/attendance/export?${params}`, '_blank');
+    try {
+      await downloadAuthenticated(`/api/attendance/export?${params}`, token, `casuals-attendance_${from}_to_${to}.csv`);
+    } catch (err) {
+      setError(err.message || 'Could not export CSV. Try again.');
+    }
   }
 
   const visibleRows = useMemo(() => {
@@ -223,6 +224,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   function renderRow(row) {
     const dateStr = row.date.slice(0, 10);
+    const rosterMismatch = row.rosteredShift && row.rosteredShift.id !== row.shift.id;
     return (
       <tr
         key={row.id}
@@ -234,14 +236,26 @@ export default function AttendanceDashboard({ token, onLogout }) {
         <td className="mono" data-label="Employee ID">{row.worker.biostarUserId}</td>
         <td data-label="Worker">{row.worker.name}</td>
         <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
-        <td data-label="Shift">{row.shift.name}</td>
+        <td data-label="Shift">
+          {row.shift.name}
+          {rosterMismatch && (
+            <div className="dash__roster-note" title="The roster expected a different shift than what the punches show">
+              rostered: {row.rosteredShift.name}
+            </div>
+          )}
+        </td>
         <td className="mono" data-label="In">{formatTime(row.checkIn)}</td>
         <td className="mono" data-label="Out">{formatTime(row.checkOut)}</td>
         <td className="mono" data-label="Hours">{row.hoursWorked ?? '—'}</td>
         <td data-label="Status">
-          <span className={`status status--${row.status === 'no-checkout' ? 'pending' : row.status === 'late' ? 'late' : 'ok'}`}>
+          <span className={`status status--${statusClassName(row.status)}`}>
             {STATUS_LABEL[row.status] || row.status}
           </span>
+          {row.earlyCheckOut && (
+            <span className="status status--flag" title="Checked out well before the shift's scheduled end">
+              ⚠ Early checkout
+            </span>
+          )}
           {row.hasMultiplePunches && (
             <span className="status status--flag" title="More than one check-in or check-out was recorded — open for details">
               ⚠ Multiple punches
@@ -288,6 +302,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
           <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
             {syncing ? 'Syncing…' : 'Refresh'}
           </button>
+          <button className="dash__roster" onClick={() => setRosterModalOpen(true)}>Upload Roster</button>
           <button className="dash__export" onClick={handleExport}>Export CSV</button>
           <button className="dash__signout" onClick={onLogout}>Sign out</button>
         </div>
@@ -378,6 +393,14 @@ export default function AttendanceDashboard({ token, onLogout }) {
         />
       )}
 
+      {rosterModalOpen && (
+        <ShiftRosterUploadModal
+          token={token}
+          onClose={() => setRosterModalOpen(false)}
+          onUploaded={loadSummaries}
+        />
+      )}
+
       <style>{`
         .dash {
           min-height: 100vh;
@@ -435,7 +458,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding-bottom: 20px;
           border-bottom: 1px solid #1B2A40;
         }
-        .dash__refresh, .dash__export, .dash__signout, .dash__toggle-all {
+        .dash__refresh, .dash__roster, .dash__export, .dash__signout, .dash__toggle-all {
           border: 1px solid #24354F;
           background: transparent;
           color: #E8EDF2;
@@ -449,6 +472,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
           cursor: default;
         }
         .dash__refresh:hover:not(:disabled) {
+          background: #16243A;
+        }
+        .dash__roster:hover {
           background: #16243A;
         }
         .dash__export {
@@ -560,10 +586,23 @@ export default function AttendanceDashboard({ token, onLogout }) {
           color: #8A99AC;
           border-color: #3A4A61;
         }
+        .status--early {
+          color: #5B8DC9;
+          border-color: #2E4E77;
+        }
+        .status--critical {
+          color: #C9535A;
+          border-color: #7A3236;
+        }
         .status--flag {
           color: #C9A227;
           border-color: #8A6E1B;
           margin-left: 6px;
+        }
+        .dash__roster-note {
+          font-size: 11px;
+          color: #C9535A;
+          margin-top: 2px;
         }
 
         @media (max-width: 640px) {
