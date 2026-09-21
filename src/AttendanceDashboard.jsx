@@ -115,6 +115,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [syncing, setSyncing] = useState(false);
   const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
   const [rosterModalOpen, setRosterModalOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const [filterId, setFilterId] = useState('');
   const [filterName, setFilterName] = useState('');
@@ -190,6 +191,24 @@ export default function AttendanceDashboard({ token, onLogout }) {
       await downloadAuthenticated(`/api/attendance/export?${params}`, token, `casuals-attendance_${from}_to_${to}.csv`);
     } catch (err) {
       setError(err.message || 'Could not export CSV. Try again.');
+    }
+  }
+
+  // The PDF is built server-side over the whole date range (not just the 500
+  // rows the table loads), but takes the on-screen filters/sort/group so the
+  // report matches what's being looked at.
+  async function handleDownloadPdf() {
+    setError('');
+    setPdfBusy(true);
+    const params = new URLSearchParams({ from, to, sortBy, groupBy });
+    if (filterId.trim()) params.set('id', filterId.trim());
+    if (filterName.trim()) params.set('name', filterName.trim());
+    try {
+      await downloadAuthenticated(`/api/attendance/report.pdf?${params}`, token, `casuals-attendance-report_${from}_to_${to}.pdf`);
+    } catch (err) {
+      setError(err.message || 'Could not generate the PDF report. Try again.');
+    } finally {
+      setPdfBusy(false);
     }
   }
 
@@ -303,6 +322,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
             {syncing ? 'Syncing…' : 'Refresh'}
           </button>
           <button className="dash__roster" onClick={() => setRosterModalOpen(true)}>Upload Roster</button>
+          <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
+            {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
+          </button>
           <button className="dash__export" onClick={handleExport}>Export CSV</button>
           <button className="dash__signout" onClick={onLogout}>Sign out</button>
         </div>
@@ -458,7 +480,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding-bottom: 20px;
           border-bottom: 1px solid #1B2A40;
         }
-        .dash__refresh, .dash__roster, .dash__export, .dash__signout, .dash__toggle-all {
+        .dash__refresh, .dash__roster, .dash__pdf, .dash__export, .dash__signout, .dash__toggle-all {
           border: 1px solid #24354F;
           background: transparent;
           color: #E8EDF2;
@@ -476,6 +498,19 @@ export default function AttendanceDashboard({ token, onLogout }) {
         }
         .dash__roster:hover {
           background: #16243A;
+        }
+        .dash__pdf {
+          background: #3E8E7E;
+          border-color: #3E8E7E;
+          color: #0F1B2C;
+          font-weight: 600;
+        }
+        .dash__pdf:hover:not(:disabled) {
+          background: #4EA391;
+        }
+        .dash__pdf:disabled {
+          opacity: 0.6;
+          cursor: default;
         }
         .dash__export {
           border-color: #3E8E7E;

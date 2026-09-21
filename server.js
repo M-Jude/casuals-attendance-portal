@@ -11,6 +11,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api', require('./routes/attendance'));        // GET /api/attendance
 app.use('/api', require('./routes/attendanceExport'));  // GET /api/attendance/export
 app.use('/api', require('./routes/attendanceSummary'));  // GET /api/attendance/summary, /api/attendance/punches
+app.use('/api', require('./routes/attendanceReport'));   // GET /api/attendance/report.pdf
 app.use('/api', require('./routes/shiftRoster'));         // GET /api/shifts, roster template/upload
 
 const PORT = process.env.PORT || 4000;
