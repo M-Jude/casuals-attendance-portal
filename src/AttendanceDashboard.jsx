@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
 import ShiftRosterUploadModal from './ShiftRosterUploadModal';
+import AttendanceAnalytics from './AttendanceAnalytics';
 import { STATUS_LABEL, STATUS_RANK, statusClassName } from './shiftStatus';
 import { downloadAuthenticated } from './downloadFile';
 
@@ -106,7 +107,10 @@ function groupRows(rows, groupBy) {
 }
 
 export default function AttendanceDashboard({ token, onLogout }) {
-  const [from, setFrom] = useState(daysAgoISO(7));
+  // Defaults to just today + yesterday — a fast "what's happening now" view.
+  // Everything below (analytics, table, exports) is derived from from/to, so
+  // widening or narrowing this range cascades through all of it automatically.
+  const [from, setFrom] = useState(daysAgoISO(1));
   const [to, setTo] = useState(todayISO());
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -122,6 +126,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [sortBy, setSortBy] = useState('date-desc');
   const [groupBy, setGroupBy] = useState('date');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [analyticsOpen, setAnalyticsOpen] = useState(true);
 
   const loadSummaries = useCallback(async () => {
     setLoading(true);
@@ -307,69 +312,84 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   return (
     <div className="dash">
-      <header className="dash__header">
-        <div className="dash__title">CASUALS ATTENDANCE</div>
-        <div className="dash__controls">
-          <label>
-            From
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            To
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </label>
-          <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Refresh'}
-          </button>
-          <button className="dash__roster" onClick={() => setRosterModalOpen(true)}>Upload Roster</button>
-          <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
-            {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
-          </button>
-          <button className="dash__export" onClick={handleExport}>Export CSV</button>
-          <button className="dash__signout" onClick={onLogout}>Sign out</button>
-        </div>
+      <header className="dash__topbar">
+        <h1 className="dash__title">CASUALS ATTENDANCE</h1>
+        <button className="dash__signout" onClick={onLogout}>Sign out</button>
       </header>
 
+      <div className="dash__controlbar">
+        <div className="dash__controlgroup">
+          <div className="dash__controlgroup-label">Period</div>
+          <div className="dash__controlgroup-row">
+            <label>
+              From
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            </label>
+            <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Refresh'}
+            </button>
+          </div>
+        </div>
+
+        <div className="dash__controlgroup">
+          <div className="dash__controlgroup-label">Actions</div>
+          <div className="dash__controlgroup-row">
+            <button className="dash__roster" onClick={() => setRosterModalOpen(true)}>Upload Roster</button>
+            <button className="dash__export" onClick={handleExport}>Export CSV</button>
+            <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
+              {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="dash__toolbar">
-        <label>
-          Employee ID
-          <input
-            type="text"
-            placeholder="Filter by ID…"
-            value={filterId}
-            onChange={(e) => setFilterId(e.target.value)}
-          />
-        </label>
-        <label>
-          Name
-          <input
-            type="text"
-            placeholder="Filter by name…"
-            value={filterName}
-            onChange={(e) => setFilterName(e.target.value)}
-          />
-        </label>
-        <label>
-          Sort by
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            {SORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Group by
-          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
-            {GROUP_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </label>
-        {isGrouped && groups.length > 0 && (
-          <button className="dash__toggle-all" onClick={toggleAllGroups}>
-            {allCollapsed ? 'Expand All' : 'Collapse All'}
-          </button>
-        )}
+        <div className="dash__toolbar-label">Filter &amp; organize</div>
+        <div className="dash__toolbar-row">
+          <label>
+            Employee ID
+            <input
+              type="text"
+              placeholder="Filter by ID…"
+              value={filterId}
+              onChange={(e) => setFilterId(e.target.value)}
+            />
+          </label>
+          <label>
+            Name
+            <input
+              type="text"
+              placeholder="Filter by name…"
+              value={filterName}
+              onChange={(e) => setFilterName(e.target.value)}
+            />
+          </label>
+          <label>
+            Sort by
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Group by
+            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+              {GROUP_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          {isGrouped && groups.length > 0 && (
+            <button className="dash__toggle-all" onClick={toggleAllGroups}>
+              {allCollapsed ? 'Expand All' : 'Collapse All'}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <div className="dash__error" role="alert">{error}</div>}
@@ -379,33 +399,59 @@ export default function AttendanceDashboard({ token, onLogout }) {
         </div>
       )}
 
-      {loading ? (
-        <div className="dash__empty">Loading attendance records…</div>
-      ) : sortedRows.length === 0 ? (
-        <div className="dash__empty">No attendance records match the current filters.</div>
-      ) : !isGrouped ? (
-        renderTable(sortedRows)
-      ) : (
-        <div className="dash__accordion">
-          {groups.map((group) => {
-            const collapsed = collapsedGroups.has(group.key);
-            return (
-              <div className="dash__group" key={group.key}>
-                <button
-                  className="dash__group-header"
-                  onClick={() => toggleGroup(group.key)}
-                  aria-expanded={!collapsed}
-                >
-                  <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
-                  <span className="dash__group-label">{group.label}</span>
-                  <span className="dash__group-count">{group.rows.length}</span>
-                </button>
-                {!collapsed && renderTable(group.rows)}
-              </div>
-            );
-          })}
-        </div>
+      {!loading && sortedRows.length > 0 && (
+        <section className="dash__section">
+          <button
+            className="dash__section-header"
+            onClick={() => setAnalyticsOpen((v) => !v)}
+            aria-expanded={analyticsOpen}
+          >
+            <span className={`dash__chevron ${analyticsOpen ? '' : 'dash__chevron--collapsed'}`}>▾</span>
+            <span className="dash__section-title">Overview</span>
+            <span className="dash__section-hint">at a glance for the selected period</span>
+          </button>
+          {analyticsOpen && <AttendanceAnalytics rows={sortedRows} />}
+        </section>
       )}
+
+      <section className="dash__section">
+        <div className="dash__section-title-static">
+          Detailed records
+          {!loading && (
+            <span className="dash__section-hint">
+              {sortedRows.length} record{sortedRows.length === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="dash__empty">Loading attendance records…</div>
+        ) : sortedRows.length === 0 ? (
+          <div className="dash__empty">No attendance records match the current filters.</div>
+        ) : !isGrouped ? (
+          renderTable(sortedRows)
+        ) : (
+          <div className="dash__accordion">
+            {groups.map((group) => {
+              const collapsed = collapsedGroups.has(group.key);
+              return (
+                <div className="dash__group" key={group.key}>
+                  <button
+                    className="dash__group-header"
+                    onClick={() => toggleGroup(group.key)}
+                    aria-expanded={!collapsed}
+                  >
+                    <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
+                    <span className="dash__group-label">{group.label}</span>
+                    <span className="dash__group-count">{group.rows.length}</span>
+                  </button>
+                  {!collapsed && renderTable(group.rows)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {selectedRow && (
         <PunchHistoryModal
@@ -432,38 +478,78 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding: 32px 40px;
           box-sizing: border-box;
         }
-        .dash__header {
+        /* Identity bar — brand + the one account-level action. Deliberately
+           quiet: everything a user actually works with lives further down. */
+        .dash__topbar {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          flex-wrap: wrap;
           gap: 16px;
-          border-bottom: 1px solid #24354F;
-          padding-bottom: 20px;
+          padding-bottom: 16px;
           margin-bottom: 20px;
+          border-bottom: 1px solid #24354F;
         }
         .dash__title {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 14px;
+          font-weight: 400;
           letter-spacing: 0.06em;
           color: #3E8E7E;
+          margin: 0;
         }
-        .dash__controls {
+        .dash__signout {
+          border: none;
+          background: none;
+          color: #66768A;
+          font-size: 12px;
+          cursor: pointer;
+          font-family: inherit;
+          padding: 4px 0;
+        }
+        .dash__signout:hover {
+          color: #E8EDF2;
+        }
+
+        /* Control bar — two clearly separated clusters: "what period am I
+           looking at" (left) and "what can I do with it" (right). */
+        .dash__controlbar {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          flex-wrap: wrap;
+          gap: 24px;
+          padding-bottom: 20px;
+          margin-bottom: 20px;
+          border-bottom: 1px solid #1B2A40;
+        }
+        .dash__controlgroup {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .dash__controlgroup-label, .dash__toolbar-label {
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #66768A;
+        }
+        .dash__controlgroup-row, .dash__toolbar-row {
           display: flex;
           align-items: flex-end;
-          gap: 16px;
+          gap: 12px;
           flex-wrap: wrap;
         }
-        .dash__controls label, .dash__toolbar label {
+        .dash__controlgroup-row label, .dash__toolbar-row label {
           display: flex;
           flex-direction: column;
           font-size: 12px;
           color: #8A99AC;
           gap: 4px;
         }
-        .dash__controls input,
-        .dash__toolbar input,
-        .dash__toolbar select {
+        .dash__controlgroup-row input,
+        .dash__toolbar-row input,
+        .dash__toolbar-row select {
           background: #16243A;
           border: 1px solid #24354F;
           color: #E8EDF2;
@@ -471,16 +557,19 @@ export default function AttendanceDashboard({ token, onLogout }) {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 13px;
         }
+
+        /* View controls — filtering/sorting/grouping the data already
+           loaded for the period above; sits right against what it governs. */
         .dash__toolbar {
           display: flex;
-          align-items: flex-end;
-          gap: 16px;
-          flex-wrap: wrap;
+          flex-direction: column;
+          gap: 8px;
           margin-bottom: 24px;
           padding-bottom: 20px;
           border-bottom: 1px solid #1B2A40;
         }
-        .dash__refresh, .dash__roster, .dash__pdf, .dash__export, .dash__signout, .dash__toggle-all {
+
+        .dash__refresh, .dash__roster, .dash__pdf, .dash__export, .dash__toggle-all {
           border: 1px solid #24354F;
           background: transparent;
           color: #E8EDF2;
@@ -519,7 +608,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
         .dash__export:hover {
           background: rgba(62, 142, 126, 0.12);
         }
-        .dash__signout:hover, .dash__toggle-all:hover {
+        .dash__toggle-all:hover {
           background: #16243A;
         }
         .dash__error {
@@ -532,6 +621,48 @@ export default function AttendanceDashboard({ token, onLogout }) {
           font-size: 14px;
           padding: 40px 0;
           text-align: center;
+        }
+
+        /* Content sections — "Overview" (collapsible) and "Detailed
+           records" each get their own labelled zone so it's clear which
+           question each part of the page answers. */
+        .dash__section {
+          margin-bottom: 32px;
+        }
+        .dash__section-header {
+          width: 100%;
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          background: none;
+          border: none;
+          border-bottom: 1px solid #24354F;
+          color: #E8EDF2;
+          padding: 0 0 12px;
+          margin-bottom: 20px;
+          font-family: inherit;
+          cursor: pointer;
+          text-align: left;
+        }
+        .dash__section-title {
+          font-size: 15px;
+          font-weight: 700;
+        }
+        .dash__section-title-static {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          border-bottom: 1px solid #24354F;
+          padding-bottom: 12px;
+          margin-bottom: 20px;
+          font-size: 15px;
+          font-weight: 700;
+        }
+        .dash__section-hint {
+          font-size: 11px;
+          font-weight: 400;
+          color: #66768A;
+          margin-left: auto;
         }
         .dash__accordion {
           display: flex;
@@ -642,6 +773,8 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
         @media (max-width: 640px) {
           .dash { padding: 20px; }
+          .dash__controlbar { flex-direction: column; gap: 20px; }
+          .dash__section-hint { margin-left: 0; }
           .dash__table thead { display: none; }
           .dash__table, .dash__table tbody, .dash__table tr, .dash__table td {
             display: block;

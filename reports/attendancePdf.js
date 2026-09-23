@@ -151,6 +151,8 @@ function groupRows(rows, groupBy) {
   return list;
 }
 
+// Mirrored by src/attendanceStats.js's computeAnalytics() for the
+// dashboard's on-screen analytics panel — keep the two in sync.
 function computeStats(rows) {
   const counts = countByStatus(rows);
   const workers = new Set();

@@ -19,7 +19,16 @@ export default function PortalLogin({ onLogin }) {
       });
 
       if (!res.ok) {
-        setError('Email or password is incorrect.');
+        // 401 stays generic (don't reveal whether the email exists); other
+        // failures — rate limiting, validation, server errors — are real
+        // conditions worth telling the user about specifically, since
+        // "password incorrect" is actively misleading for those.
+        if (res.status === 401) {
+          setError('Email or password is incorrect.');
+        } else {
+          const body = await res.json().catch(() => ({}));
+          setError(body.error || 'Something went wrong. Try again.');
+        }
         setSubmitting(false);
         return;
       }
