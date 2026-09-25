@@ -44,7 +44,7 @@ export default function PortalLogin({ onLogin }) {
   return (
     <div className="portal-login">
       <div className="portal-login__panel">
-        <div className="portal-login__mark">CASUALS ATTENDANCE</div>
+        <div className="portal-login__mark">UCAA-ARK GROUP CASUALS MANAGEMENT SYSTEM</div>
         <p className="portal-login__sub">Sign in to view your workers' attendance records.</p>
 
         <form onSubmit={handleSubmit}>

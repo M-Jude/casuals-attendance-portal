@@ -313,7 +313,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
   return (
     <div className="dash">
       <header className="dash__topbar">
-        <h1 className="dash__title">CASUALS ATTENDANCE</h1>
+        <h1 className="dash__title">UCAA-ARK GROUP CASUALS MANAGEMENT SYSTEM</h1>
         <button className="dash__signout" onClick={onLogout}>Sign out</button>
       </header>
 
