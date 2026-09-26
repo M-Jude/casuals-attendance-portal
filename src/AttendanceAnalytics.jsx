@@ -9,7 +9,9 @@ const STATUS_COLOR = {
   early: '#5B8DC9',
   late: '#C9A227',
   'no-checkout': '#8A99AC',
-  'no-show': '#C9535A'
+  'no-checkin': '#A9B6C5',
+  'no-show': '#C9535A',
+  'in-progress': '#2E4E77'
 };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -99,7 +101,7 @@ export default function AttendanceAnalytics({ rows }) {
     { label: 'PUNCTUALITY', value: punctuality, sub: `${stats.punctual} of ${stats.completed} completed shifts`, accent: STATUS_COLOR['on-time'] },
     { label: 'LATE ARRIVALS', value: String(stats.counts.late), sub: `${pct(stats.counts.late, stats.total)}% of records`, accent: STATUS_COLOR.late },
     { label: 'NO CHECKOUT', value: String(stats.counts['no-checkout']), sub: `${pct(stats.counts['no-checkout'], stats.total)}% of records`, accent: STATUS_COLOR['no-checkout'] },
-    { label: 'NO-SHOWS', value: String(stats.counts['no-show']), sub: 'rostered, no punch activity', accent: STATUS_COLOR['no-show'] }
+    { label: 'NO-SHOWS', value: String(stats.counts['no-show']), sub: 'scheduled, no punch activity', accent: STATUS_COLOR['no-show'] }
   ];
 
   const shiftBits = [...stats.byShift.entries()].map(([name, n]) => `${name} shift: ${n}`);
@@ -153,7 +155,7 @@ export default function AttendanceAnalytics({ rows }) {
         <div className="an__meta">
           {shiftBits.join('  ·  ')}
           {shiftBits.length > 0 && '  ·  '}
-          Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Roster mismatches: {stats.rosterMismatch}
+          Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Unscheduled: {stats.unscheduled}  ·  Not yet approved: {stats.unapproved}
         </div>
       </div>
 

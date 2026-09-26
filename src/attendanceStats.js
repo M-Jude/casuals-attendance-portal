@@ -4,7 +4,7 @@
 // the downloaded PDF report always agree on the same numbers for the same rows —
 // keep the two in sync if either changes.
 
-export const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-show'];
+export const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-checkin', 'no-show', 'in-progress'];
 
 const dateStrOf = (row) => row.date.slice(0, 10);
 
@@ -18,7 +18,8 @@ export function computeAnalytics(rows) {
   let hoursN = 0;
   let earlyCheckOuts = 0;
   let multiPunch = 0;
-  let rosterMismatch = 0;
+  let unscheduled = 0;
+  let unapproved = 0;
 
   for (const r of rows) {
     if (counts[r.status] !== undefined) counts[r.status]++;
@@ -33,7 +34,8 @@ export function computeAnalytics(rows) {
     if (r.hoursWorked != null) { hoursTotal += r.hoursWorked; hoursN++; }
     if (r.earlyCheckOut) earlyCheckOuts++;
     if (r.hasMultiplePunches) multiPunch++;
-    if (r.rosteredShift && r.rosteredShift.id !== r.shift.id) rosterMismatch++;
+    if (r.source === 'unscheduled') unscheduled++;
+    if (!r.approvedAt || r.changedAfterApproval) unapproved++;
 
     if (!perWorker.has(r.worker.id)) {
       perWorker.set(r.worker.id, { worker: r.worker, late: 0, noCheckout: 0, noShow: 0, earlyOut: 0, shifts: 0 });
@@ -62,7 +64,8 @@ export function computeAnalytics(rows) {
     hoursAvg: hoursN ? hoursTotal / hoursN : 0,
     earlyCheckOuts,
     multiPunch,
-    rosterMismatch,
+    unscheduled,
+    unapproved,
     byShift,
     days: [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     attention

@@ -16,8 +16,10 @@ model CasualWorker {
   status            String   @default("active") // active | inactive
 
   attendanceLogs    AttendanceLog[]
-  shiftAssignments  ShiftAssignment[]
+  schedules         WorkerSchedule[]
+  shiftExceptions   ShiftException[]
   dailySummaries    DailyAttendanceSummary[]
+  profile           WorkerProfile?
 }
 
 model AttendanceLog {
@@ -33,68 +35,234 @@ model AttendanceLog {
   @@index([casualWorkerId, timestamp])
 }
 
+// Portal accounts. Roles (see middleware/requireRole.js for what each can do):
+//   sysadmin        — super user: all data, all settings, any account
+//   hr              — creates supervisor/finance/admin_assistant accounts,
+//                     approves permanent-Day workers monthly and escalations,
+//                     reviews worker pattern changes
+//   admin_assistant — sees everything, approves escalated shifts
+//   finance         — sees APPROVED records only
+//   supervisor      — leads one crew (crewId) and approves its shifts
 model PortalUser {
   id                Int      @id @default(autoincrement())
   email             String   @unique
   passwordHash      String
+  name              String   @default("")
+  role              String   @default("hr")
+  crewId            Int?
+  crew              Crew?    @relation(fields: [crewId], references: [id])
+  active            Boolean  @default(true)
+  subcontractorName String   @default("Subcontractor A")
+  createdById       Int?
+  createdAt         DateTime @default(now())
+
+  notifications     Notification[]
+}
+
+// Fixed shift definitions. Only two rows: Day and Night. Night is
+// "overnight" because endTime < startTime. Times are business-local
+// (Africa/Kampala). The capture window [earliestCheckIn, latestCheckOut] is
+// where a shift's punches are looked for; a latestCheckOut at or before
+// startTime falls on the following day.
+model Shift {
+  id                   Int      @id @default(autoincrement())
+  name                 String   @unique // "Day" | "Night"
+  startTime            String   // "HH:mm"
+  endTime              String   // "HH:mm"
+  graceMinutes         Int      @default(30) // check-in more than this after start is "late"
+  earlyOutGraceMinutes Int      @default(0)  // check-out more than this before end is an early check-out
+  earliestCheckIn      String   @default("05:00")
+  latestCheckOut       String   @default("05:00")
+  updatedById          Int?
+  updatedAt            DateTime @default(now()) @updatedAt
+
+  summaries            DailyAttendanceSummary[]
+}
+
+// A team of casuals that rotates through a repeating pattern (e.g. Day,
+// Day, Night, Night, off, off). Each crew is led by a supervisor.
+model Crew {
+  id                Int      @id @default(autoincrement())
+  name              String
   subcontractorName String   @default("Subcontractor A")
   createdAt         DateTime @default(now())
+
+  rotations         CrewRotation[]
+  supervisors       PortalUser[]
+  schedules         WorkerSchedule[]
+  proposals         CrewCycleProposal[]
+
+  @@unique([subcontractorName, name])
 }
 
-// Fixed shift definitions. Only two rows expected: Day and Night.
-// Night is "overnight" because endTime < startTime.
-model Shift {
-  id           Int      @id @default(autoincrement())
-  name         String   @unique // "Day" | "Night"
-  startTime    String   // "HH:mm", business-local (Africa/Kampala)
-  endTime      String   // "HH:mm", business-local
-  graceMinutes Int      @default(15) // tolerance before a check-in counts as "late"
+// A crew's rotation, effective-dated so a cycle change doesn't rewrite the
+// crew's history. The rotation in force on a date is the latest one with
+// effectiveFrom <= that date. pattern letters: D = Day, N = Night, O = off;
+// anchorDate is any date on which the crew is on pattern[0].
+model CrewRotation {
+  id            Int      @id @default(autoincrement())
+  crewId        Int
+  crew          Crew     @relation(fields: [crewId], references: [id])
+  effectiveFrom DateTime // date-only, stored at UTC midnight
+  anchorDate    DateTime // date-only
+  pattern       String   @default("DDNNOO")
+  note          String?
+  createdById   Int?
+  createdAt     DateTime @default(now())
 
-  assignments        ShiftAssignment[]
-  summaries          DailyAttendanceSummary[]
-  rosteredSummaries  DailyAttendanceSummary[] @relation("RosteredShiftSummaries")
+  @@unique([crewId, effectiveFrom])
 }
 
-// The uploaded shift roster — one row per worker per date, naming which
-// shift they were scheduled for. Populated by POST /api/shifts/roster/upload
-// (sync/shiftRoster.js), not hand-maintained. `date` is the shift's anchor
-// date: the calendar day the shift STARTS (for Night, that's the evening
-// date, not the following morning — same convention as
-// DailyAttendanceSummary.date). This is now the authoritative source for
-// "who was expected on what shift" — see sync/computeDailySummaries.js,
-// which cross-references it to detect no-shows and roster/actual mismatches,
-// while still deriving check-in/check-out times from real punches.
-model ShiftAssignment {
+// Which schedule a worker follows, effective-dated like CrewRotation.
+//   crew        — follows crewId's rotation
+//   fixed-day   — permanent Day (HR approves their records monthly)
+//   fixed-night — permanent Night (likewise)
+//   unassigned  — no schedule; punches are classified by clock time and
+//                 flagged "unscheduled"
+model WorkerSchedule {
   id             Int      @id @default(autoincrement())
   casualWorkerId Int
   worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
-  date           DateTime     // date-only, stored at UTC midnight
-  shiftId        Int
-  shift          Shift        @relation(fields: [shiftId], references: [id])
-  uploadedAt     DateTime @default(now())
+  effectiveFrom  DateTime // date-only
+  type           String
+  crewId         Int?
+  crew           Crew?    @relation(fields: [crewId], references: [id])
+  note           String?
+  createdById    Int?
+  createdAt      DateTime @default(now())
+
+  @@unique([casualWorkerId, effectiveFrom])
+}
+
+// A supervisor's override of a worker's schedule for one date: a swap,
+// cover, double shift or day off. `shifts` is the full set worked that date
+// — "Day", "Night", "Day,Night" (double shift) or "" (off).
+model ShiftException {
+  id             Int      @id @default(autoincrement())
+  casualWorkerId Int
+  worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
+  date           DateTime // date-only; the shift's start date
+  shifts         String
+  note           String?
+  createdById    Int?
+  createdAt      DateTime @default(now())
 
   @@unique([casualWorkerId, date])
 }
 
-// One computed row per worker per shift instance, derived from raw punches
-// classified by time-of-day (see sync/computeDailySummaries.js). This is
-// what the dashboard should read — never raw AttendanceLog rows directly.
+// One computed row per worker per shift instance (a double shift is two
+// rows). Written by sync/computeDailySummaries.js from the shift engine;
+// this is what the dashboard reads — never raw AttendanceLog rows directly.
+//
+// Approval: rows are grouped into ApprovalUnits by approvalKey. Once
+// approved, a row is locked — a later recomputation that would change it
+// sets changedAfterApproval and parks the new values in pendingValues until
+// someone re-approves.
 model DailyAttendanceSummary {
-  id                 Int      @id @default(autoincrement())
-  casualWorkerId     Int
-  worker             CasualWorker @relation(fields: [casualWorkerId], references: [id])
-  date               DateTime     // the shift's anchor date
-  shiftId            Int          // the shift punches were actually matched against
-  shift              Shift        @relation(fields: [shiftId], references: [id])
-  rosteredShiftId    Int?         // the shift ShiftAssignment says they were expected on, if any — null when this date/worker has no roster entry; differs from shiftId when the worker punched under a different shift than rostered
-  rosteredShift      Shift?       @relation("RosteredShiftSummaries", fields: [rosteredShiftId], references: [id])
-  checkIn            DateTime?
-  checkOut           DateTime?
-  hoursWorked        Float?       // informational only — no overtime logic applied
-  status             String       // 'early' | 'on-time' | 'late' | 'no-checkout' | 'no-show'
-  hasMultiplePunches Boolean  @default(false) // >1 check-in or check-out in this shift — worth a manual glance, since FILO can't tell noise from a real gap
-  earlyCheckOut      Boolean  @default(false) // checked out more than graceMinutes before shift end — independent of `status`, which already tracks check-in timing
-  computedAt         DateTime @default(now())
+  id                   Int      @id @default(autoincrement())
+  casualWorkerId       Int
+  worker               CasualWorker @relation(fields: [casualWorkerId], references: [id])
+  date                 DateTime // the shift's start date
+  shiftId              Int
+  shift                Shift    @relation(fields: [shiftId], references: [id])
+  source               String   @default("schedule") // schedule | exception | unscheduled
+  checkIn              DateTime?
+  checkOut             DateTime?
+  checkInImplied       Boolean  @default(false) // continuous double shift with no badge at the changeover
+  checkOutImplied      Boolean  @default(false)
+  hoursWorked          Float?   // check-in to check-out; no meal deduction
+  regularHours         Float?   // the part of hoursWorked inside the scheduled shift
+  status               String   // on-time | early | late | no-checkout | no-checkin | in-progress | no-show
+  lateIn               Boolean  @default(false)
+  earlyCheckOut        Boolean  @default(false)
+  hasMultiplePunches   Boolean  @default(false)
+  punchIds             Json?    // AttendanceLog ids this shift captured
+  approvalKey          String
+  approvalCrewId       Int?     // crew whose supervisor approves; null = HR monthly
+  supervisorComment    String?  @db.Text
+  approvedAt           DateTime?
+  approvedById         Int?
+  changedAfterApproval Boolean  @default(false)
+  pendingValues        Json?
+  computedAt           DateTime @default(now())
 
-  @@unique([casualWorkerId, date])
+  @@unique([casualWorkerId, date, shiftId])
+  @@index([approvalKey])
+  @@index([date])
+}
+
+// A batch of rows approved together:
+//   crew-shift — one crew's Day or Night shift on one date; approved by the
+//                crew's supervisor after the shift ends, escalated to HR and
+//                the Admin Assistant 48h later if still pending
+//   hr-month   — permanent-Day/Night (and other non-crew) workers' rows for
+//                a month; approved by HR after the month ends
+model ApprovalUnit {
+  id                Int      @id @default(autoincrement())
+  key               String   @unique
+  kind              String
+  subcontractorName String
+  date              DateTime?
+  shiftId           Int?
+  crewId            Int?
+  month             String?  // "YYYY-MM" for hr-month
+  dueAt             DateTime
+  status            String   @default("pending") // pending | approved | reopened
+  reopenedAt        DateTime?
+  dueNotifiedAt     DateTime?
+  escalatedAt       DateTime?
+  approvedAt        DateTime?
+  approvedById      Int?
+  comment           String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  @@index([status, dueAt])
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      PortalUser @relation(fields: [userId], references: [id])
+  type      String
+  title     String
+  body      String   @db.Text
+  link      String?
+  readAt    DateTime?
+  emailedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+}
+
+// Latest punch-pattern profile per worker (sync/profilingJob.js): the
+// schedule their punches fit best, for HR's pattern review.
+model WorkerProfile {
+  casualWorkerId   Int      @id
+  worker           CasualWorker @relation(fields: [casualWorkerId], references: [id])
+  suggestedType    String?  // crew | rotation | fixed-day | fixed-night; null = no clear pattern
+  suggestedCrewId  Int?
+  suggestedPattern String?
+  suggestedAnchor  DateTime?
+  confidence       Float    @default(0)
+  completeShifts   Int      @default(0)
+  suggestionKey    String?  // stable signature of the suggestion
+  dismissedKey     String?  // HR dismissed this exact suggestion
+  notifiedKey      String?  // HR was already told about this exact suggestion
+  details          Json?
+  computedAt       DateTime @default(now())
+}
+
+// A detected change in a crew's cycle, waiting for the system admin.
+model CrewCycleProposal {
+  id            Int      @id @default(autoincrement())
+  crewId        Int
+  crew          Crew     @relation(fields: [crewId], references: [id])
+  pattern       String
+  anchorDate    DateTime
+  effectiveFrom DateTime
+  status        String   @default("open") // open | applied | dismissed
+  evidence      Json?
+  createdAt     DateTime @default(now())
+  resolvedById  Int?
+  resolvedAt    DateTime?
 }

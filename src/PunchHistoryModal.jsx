@@ -14,7 +14,14 @@ function formatDate(dateStr) {
   });
 }
 
-const EVENT_LABEL = { 'check-in': 'Check-in', 'check-out': 'Check-out', other: 'Other' };
+// Devices here don't label punches, so a punch's role comes from which
+// shift window it fell in (see sync/shiftEngine.js).
+function punchRole(p) {
+  if (p.usedAsCheckIn && p.usedAsCheckOut) return 'Check-out and next check-in';
+  if (p.usedAsCheckIn) return 'Check-in';
+  if (p.usedAsCheckOut) return 'Check-out';
+  return 'Not used (repeat badge)';
+}
 
 export default function PunchHistoryModal({ token, summary, onClose }) {
   const [punches, setPunches] = useState([]);
@@ -28,11 +35,7 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
       setLoading(true);
       setError('');
       try {
-        const params = new URLSearchParams({
-          workerId: String(summary.worker.id),
-          shiftId: String(summary.shift.id),
-          date: summary.date.slice(0, 10)
-        });
+        const params = new URLSearchParams({ summaryId: String(summary.id) });
         const res = await fetch(`/api/attendance/punches?${params}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
@@ -78,9 +81,26 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
             <span className="modal__stat-label">Hours worked</span>
             <span className="mono">{summary.hoursWorked ?? '—'}</span>
           </div>
-          {summary.rosteredShift && summary.rosteredShift.id !== summary.shift.id && (
-            <div className="modal__flag">⚠ Rostered for {summary.rosteredShift.name}, but punches match {summary.shift.name}.</div>
+          {summary.source === 'exception' && (
+            <div className="modal__note">Worked as an exception to the usual schedule for this date.</div>
           )}
+          {summary.source === 'unscheduled' && (
+            <div className="modal__flag">⚠ Worked outside this worker’s schedule. A supervisor can record an exception for this date.</div>
+          )}
+          {(summary.checkInImplied || summary.checkOutImplied) && (
+            <div className="modal__note">Double shift with no badge at the changeover — split at the scheduled handover time.</div>
+          )}
+          {summary.lateIn && summary.status !== 'late' && (
+            <div className="modal__flag">⚠ Checked in after the late threshold.</div>
+          )}
+          <div className="modal__note">
+            {summary.changedAfterApproval
+              ? '⚠ Changed after approval — the approved values stand until it is re-approved.'
+              : summary.approvedAt
+                ? `Approved ${formatDateTime(summary.approvedAt)}.`
+                : 'Not yet approved.'}
+            {summary.supervisorComment ? ` Supervisor: “${summary.supervisorComment}”` : ''}
+          </div>
           {summary.earlyCheckOut && (
             <div className="modal__flag">⚠ Checked out well before the shift's scheduled end.</div>
           )}
@@ -103,14 +123,7 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
                 return (
                   <li key={p.id} className={`punch-item ${used ? 'punch-item--used' : 'punch-item--ignored'}`}>
                     <span className="punch-item__time mono">{formatDateTime(p.timestamp)}</span>
-                    <span className="punch-item__type">{EVENT_LABEL[p.eventType] || p.eventType}</span>
-                    <span className="punch-item__tag">
-                      {p.eventType === 'other'
-                        ? null
-                        : used
-                          ? 'Used'
-                          : 'Ignored (duplicate)'}
-                    </span>
+                    <span className="punch-item__tag">{punchRole(p)}</span>
                   </li>
                 );
               })}
@@ -168,6 +181,11 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
         .modal__close:hover {
           color: #E8EDF2;
         }
+        .modal__note {
+          width: 100%;
+          font-size: 12px;
+          color: #8A99AC;
+        }
         .modal__summary {
           display: flex;
           gap: 24px;
@@ -222,11 +240,8 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           flex: 0 0 auto;
           color: #E8EDF2;
         }
-        .punch-item__type {
-          flex: 1;
-          color: #8A99AC;
-        }
         .punch-item__tag {
+          margin-left: auto;
           font-size: 11px;
           padding: 2px 8px;
           border: 1px solid transparent;

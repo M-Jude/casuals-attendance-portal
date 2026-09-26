@@ -1,67 +1,77 @@
-// One-off CLI script for provisioning or resetting the subcontractor's portal login.
-// No self-service signup or email-based reset — this covers a single account created by hand.
+// CLI for bootstrapping portal accounts. Day-to-day account management
+// happens in the portal (HR / System Admin → Users); this covers the first
+// System Admin and HR accounts, and recovery.
 //
 // Usage:
-//   node scripts/seedPortalUser.js create <email> <password> [subcontractorName]
+//   node scripts/seedPortalUser.js create <email> <password> <role> "<name>" [subcontractorName]
+//   node scripts/seedPortalUser.js set-role <email> <role>
 //   node scripts/seedPortalUser.js reset-password <email> <newPassword>
+//
+// Roles: sysadmin | hr | admin_assistant | finance | supervisor
+// (supervisors need a crew — create those in the portal.)
 
 const bcrypt = require('bcrypt');
 const prisma = require('../prismaClient');
+const { ROLES } = require('../middleware/requireRole');
 
 const SALT_ROUNDS = 12;
 
-async function createUser(email, password, subcontractorName = 'Subcontractor A') {
-  const existing = await prisma.portalUser.findUnique({ where: { email } });
-  if (existing) {
-    console.error(`A portal user with email "${email}" already exists. Use reset-password instead.`);
-    process.exit(1);
-  }
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
 
-  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+async function createUser(email, password, role, name, subcontractorName = 'Subcontractor A') {
+  if (!ROLES.includes(role)) fail(`Unknown role "${role}". Use one of: ${ROLES.join(', ')}`);
+  if (role === 'supervisor') fail('Create supervisors in the portal, where you can pick their crew.');
+  const normalised = email.trim().toLowerCase();
+
+  const existing = await prisma.portalUser.findUnique({ where: { email: normalised } });
+  if (existing) fail(`A portal user with email "${normalised}" already exists. Use set-role or reset-password instead.`);
 
   const user = await prisma.portalUser.create({
-    data: { email, passwordHash, subcontractorName }
+    data: { email: normalised, name: name || '', role, passwordHash: await bcrypt.hash(password, SALT_ROUNDS), subcontractorName }
   });
 
   console.log(`Created portal user:
   id: ${user.id}
   email: ${user.email}
+  role: ${user.role}
   subcontractor: ${user.subcontractorName}`);
 }
 
+async function setRole(email, role) {
+  if (!ROLES.includes(role)) fail(`Unknown role "${role}". Use one of: ${ROLES.join(', ')}`);
+  const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
+  if (!user) fail(`No portal user found with email "${email}".`);
+  await prisma.portalUser.update({ where: { id: user.id }, data: { role, crewId: role === 'supervisor' ? user.crewId : null } });
+  console.log(`${user.email} is now ${role}.`);
+}
+
 async function resetPassword(email, newPassword) {
-  const user = await prisma.portalUser.findUnique({ where: { email } });
-  if (!user) {
-    console.error(`No portal user found with email "${email}".`);
-    process.exit(1);
-  }
-
-  const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  await prisma.portalUser.update({ where: { email }, data: { passwordHash } });
-
-  console.log(`Password reset for ${email}.`);
+  const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
+  if (!user) fail(`No portal user found with email "${email}".`);
+  await prisma.portalUser.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS) } });
+  console.log(`Password reset for ${user.email}.`);
 }
 
 async function main() {
   const [, , command, ...args] = process.argv;
 
   if (command === 'create') {
-    const [email, password, subcontractorName] = args;
-    if (!email || !password) {
-      console.error('Usage: node scripts/seedPortalUser.js create <email> <password> [subcontractorName]');
-      process.exit(1);
-    }
-    await createUser(email, password, subcontractorName);
+    const [email, password, role, name, subcontractorName] = args;
+    if (!email || !password || !role) fail('Usage: node scripts/seedPortalUser.js create <email> <password> <role> "<name>" [subcontractorName]');
+    await createUser(email, password, role, name, subcontractorName);
+  } else if (command === 'set-role') {
+    const [email, role] = args;
+    if (!email || !role) fail('Usage: node scripts/seedPortalUser.js set-role <email> <role>');
+    await setRole(email, role);
   } else if (command === 'reset-password') {
     const [email, newPassword] = args;
-    if (!email || !newPassword) {
-      console.error('Usage: node scripts/seedPortalUser.js reset-password <email> <newPassword>');
-      process.exit(1);
-    }
+    if (!email || !newPassword) fail('Usage: node scripts/seedPortalUser.js reset-password <email> <newPassword>');
     await resetPassword(email, newPassword);
   } else {
-    console.error('Unknown command. Use "create" or "reset-password".');
-    process.exit(1);
+    fail('Unknown command. Use "create", "set-role" or "reset-password".');
   }
 
   await prisma.$disconnect();

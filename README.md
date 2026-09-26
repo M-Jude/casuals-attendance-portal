@@ -1,10 +1,11 @@
 # Casuals Attendance Portal
 
-A subcontractor-facing reporting tool for tracking attendance of casual
-workers at UCAA. BioStar 2 remains the source of truth for access control;
-this system is a decoupled, read-only layer that syncs attendance events out
-of BioStar and exposes them to the subcontractor through their own login —
-no BioStar credentials or roles are ever shared with the subcontractor.
+An attendance reporting and approval tool for UCAA's casual workers
+(supplied by Ark Group). BioStar 2 remains the source of truth for access
+control; this system is a decoupled, read-only layer that syncs punches out
+of BioStar, works out who worked which shift, and runs the supervisor → HR →
+Finance approval workflow on top — no BioStar credentials or roles are ever
+shared with portal users.
 
 ## Architecture
 
@@ -12,23 +13,32 @@ no BioStar credentials or roles are ever shared with the subcontractor.
 BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
 ```
 
-- `sync/` — logs into BioStar's TA (Time & Attendance) API, provisions
-  `CasualWorker` rows from BioStar's Casuals group membership, pulls daily
-  punch logs, writes matching records into `AttendanceLog`, computes
-  shift-aware daily attendance summaries into `DailyAttendanceSummary`
-  (`computeDailySummaries.js`), and parses/imports the uploaded shift roster
-  (`shiftRoster.js`).
-- `routes/` — Express API: login, raw attendance read, shift-aware summary
-  read, punch history, manual sync trigger, CSV export, shift roster
-  template/upload.
-- `middleware/` — JWT verification for portal accounts.
-- `scripts/seedPortalUser.js` — CLI-only account provisioning (no
-  self-service signup; there are only 1–2 subcontractor accounts).
-- `scripts/seedShifts.js` — one-off seed for the two fixed `Shift` rows.
-- `prisma/schema.prisma` — data model (`CasualWorker`, `AttendanceLog`,
-  `PortalUser`, `Shift`, `ShiftAssignment`, `DailyAttendanceSummary`).
-- `src/` — React frontend (login screen + attendance dashboard + punch
-  history modal + shift roster upload modal).
+- `sync/` — the BioStar sync and everything computed from punches:
+  - `attendanceSync.js` / `biostarClient.js` — TA login, provisions
+    `CasualWorker` from BioStar's Casuals group, pulls daily punch logs into
+    `AttendanceLog`.
+  - `shiftEngine.js` — pure: turns one worker's punches plus the shifts they
+    were expected on into shift records (see "How attendance is worked out").
+  - `scheduleResolver.js` — pure: what a worker was expected to work on a
+    date (crew rotation, permanent Day/Night, or an exception).
+  - `computeDailySummaries.js` — runs the engine for a date range and writes
+    `DailyAttendanceSummary`, keeping approved rows locked.
+  - `approvalLogic.js` — pure: locking/re-approval, due times, 48h
+    escalation, who may approve what.
+  - `approvalJobs.js` — ready-for-approval reminders and escalations.
+  - `patternProfiler.js` / `profilingJob.js` — daily punch-pattern profiling
+    for HR's pattern review and crew cycle-change detection.
+- `routes/` — Express API: auth, users, attendance summary/punches/export/PDF,
+  manual sync, shift rules, crews/schedules/exceptions/pattern review,
+  approvals, notifications.
+- `middleware/` — JWT verification (reloads the account on every request so
+  a disabled account or role change applies immediately) and role gates
+  (`requireRole.js` documents what each role can do).
+- `services/` — notifications (in-app + SMTP email) and recompute helpers.
+- `scripts/` — `seedShifts.js`, `seedPortalUser.js` (first accounts),
+  `bootstrapSchedules.js` (detect crews from punches).
+- `src/` — React frontend: login, app shell, Attendance, Approvals,
+  Schedules, Shift rules, Users.
 
 ## Setup
 
@@ -37,171 +47,162 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
    npm install
    ```
 
-2. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # fill in DATABASE_URL, JWT_SECRET, and the BIOSTAR_* values
-   ```
-   `BIOSTAR_API_USER` should be a dedicated read-only API account, not a
-   personal admin login. `BIOSTAR_TA_BASE_URL` points at the TA (Time &
-   Attendance) module, which runs on a separate port from the AC API
-   (commonly 3002) and under a `/tna` path prefix — confirm this against
-   your BioStar instance with `node test/liveBiostarCheck.js`.
-   `BIOSTAR_CASUALS_GROUP_NAME` is the exact (case-insensitive) BioStar
-   `user_group` name the sync scopes down to — this is what makes
-   provisioning "Casuals only" rather than every BioStar user, since the
-   punch-log endpoint itself has no group filter.
+2. **Configure `.env`**
+   - `DATABASE_URL`, `JWT_SECRET`, `PORT`
+   - `BIOSTAR_TA_BASE_URL`, `BIOSTAR_API_USER`, `BIOSTAR_API_PASS`,
+     `BIOSTAR_CA_CERT`, `BIOSTAR_CASUALS_GROUP_NAME` — `BIOSTAR_API_USER`
+     should be a dedicated read-only API account. `BIOSTAR_TA_BASE_URL`
+     points at the TA module (commonly port 3002, `/tna` prefix) — confirm
+     with `node test/liveBiostarCheck.js`. `BIOSTAR_CASUALS_GROUP_NAME` is the
+     BioStar `user_group` the sync scopes down to.
+   - `SYNC_LOOKBACK_DAYS` (default 14) — how far back every hourly run
+     re-syncs and recomputes.
+   - Email for escalations and alerts: `SMTP_HOST`, `SMTP_PORT` (587),
+     `SMTP_SECURE` (`true` for 465), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+     Without `SMTP_HOST` everything still works in-app; emails are skipped
+     with a warning.
+   - `APP_BASE_URL` — the portal's public URL, used for links in emails.
+   - `APPROVAL_TRACKING_FROM` (YYYY-MM-DD) — reminders/escalations only
+     cover shifts from this date; set it to the go-live date so turning the
+     workflow on doesn't escalate every historical shift at once.
 
 3. **Run database migrations**
    ```bash
-   npx prisma migrate dev --name shift_aware_attendance
+   npx prisma migrate deploy
+   npx prisma generate
    ```
+   Stop the API server first on Windows — `prisma generate` can't replace
+   the query engine while a running server has it loaded.
 
 4. **Seed the two shifts**
    ```bash
    npm run seed:shifts
    ```
-   Seeds `Shift` rows for Day (08:00–17:00) and Night (17:00–08:00).
-   Uploading a shift roster is optional but recommended — see "Shift-aware
-   attendance" below for what it adds.
 
-5. **Provision the subcontractor's portal login**
+5. **Create the first System Admin and HR accounts**
    ```bash
-   node scripts/seedPortalUser.js create ops@subcontractor.com "temp-pass-123"
+   node scripts/seedPortalUser.js create admin@example.com "<password>" sysadmin "System Admin"
+   node scripts/seedPortalUser.js create hr@example.com "<password>" hr "HR name"
    ```
-   Hand credentials to the subcontractor directly (phone/in-person for the
-   first password, not email).
+   Everyone else is created in the portal (Users): HR creates supervisors,
+   Finance and the Admin Assistant; the System Admin can create any role.
 
-6. **Start the server**
+6. **Detect the crews**
    ```bash
-   npm start
+   node scripts/bootstrapSchedules.js           # dry run: prints detected crews
+   node scripts/bootstrapSchedules.js --apply   # creates them and assigns workers
    ```
-   This starts the Express API on `PORT` (default 4000) and schedules the
-   BioStar sync + summary recompute to run hourly, plus once immediately on
-   startup. Each run also re-provisions `CasualWorker` from the configured
-   BioStar group, so newly added casuals appear automatically — no manual
-   step needed to add a worker BioStar already knows about.
+   Learns each worker's cycle from the last 28 days of punches, creates
+   `Crew A`, `Crew B`, … (rename them in Schedules → Crews), puts each
+   confidently-matched rotating worker on their crew, and recomputes
+   attendance. Workers who look like permanent Day staff are *not*
+   assigned — HR confirms them in Schedules → Pattern review. Then create
+   the three supervisors' accounts, one per crew.
 
-7. **Build the frontend**
-   Drop the contents of `src/` into your React app, add an IBM Plex
-   Sans/Mono font link to your `index.html`, and point your dev/production
-   proxy so `/api/*` requests reach the Express server above.
+7. **Start the server** (`npm start`) and the frontend (`npm run dev`,
+   which proxies `/api` to the server).
 
 ## Verifying the setup
 
-1. Run `node test/liveBiostarCheck.js` to confirm TA login and the punch-log
-   fetch both work against your instance before wiring up the full sync.
-2. Run `npm run sync` manually and check the `CasualWorker` and
-   `AttendanceLog` tables fill in.
-3. `curl -X POST http://localhost:4000/api/auth/login -H "Content-Type: application/json" -d '{"email":"...","password":"..."}'`
-   should return a JWT.
-4. `curl http://localhost:4000/api/attendance/summary -H "Authorization: Bearer <token>"`
-   should return shift-aware daily rows.
-5. Load the React app, sign in, confirm the dashboard renders, the date
-   filter refetches correctly, and clicking a row opens its punch history.
-6. Click "Export CSV" and confirm the file downloads with the expected rows.
-7. Click "Upload Roster", download the template, fill in a row or two using
-   real Employee IDs and a near-future date, and upload it back — confirm
-   the response reports it imported, and that a `no-show` row for that
-   worker/date shows up on the dashboard if they have no punches yet.
+1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against
+   your instance.
+2. Offline tests (no database needed):
+   ```bash
+   node test/shiftEngineTest.js
+   node test/patternProfilerTest.js
+   node test/approvalLogicTest.js
+   node test/scheduleResolverTest.js
+   node test/mockSyncTest.js
+   node test/cookieExtractionTest.js
+   ```
+3. Sign in as each role and check the navigation matches the role table below.
 
-## Shift-aware attendance
+## How attendance is worked out
 
-Casual workers rotate between two fixed shifts:
+The devices here never label a punch as check-in or check-out, and Day
+(08:00–17:00) and Night (17:00–08:00) share both boundaries — a badge at
+08:00 could end a Night or start a Day. So punch times alone can't say which
+shift a punch belongs to. (The previous version guessed by alternating
+in/out through each worker's punches; one missed or doubled badge then
+flipped every later shift, recording Day work as Night.)
 
-- **Day**: 08:00–17:00
-- **Night**: 17:00–08:00 (overnight)
+Instead, `sync/shiftEngine.js` works from what each worker was **expected**
+to work:
 
-Together these tile a full 24 hours with a hard boundary and no gap.
-`sync/computeDailySummaries.js` classifies each raw punch to whichever
-shift's start (for check-ins) or end (for check-outs) it's closest to in
-time-of-day. A worker doesn't need to be told in advance "you're on Night
-today" for their hours to compute correctly; the punch itself carries that
-information, since a 17:xx check-in is unambiguously a Night start and an
-08:xx check-out is unambiguously a Night end. This punch-classification
-layer is unchanged by whether a roster is uploaded, and is what makes the
-system still work for a subcontractor who never uploads one.
+- **Schedule** (`WorkerSchedule`, effective-dated): a crew, permanent Day,
+  permanent Night, or unassigned.
+- **Crew rotation** (`CrewRotation`, effective-dated): e.g. `DDNNOO` — Day,
+  Day, Night, Night, off, off — from an anchor date. Three crews offset by
+  two days cover every shift every day.
+- **Exceptions** (`ShiftException`): a supervisor's override for one date —
+  Day only, Night only, a double shift, or off.
 
-### Shift roster upload
+Each expected shift owns a capture window (Day: check-ins from 05:00,
+check-outs until 05:00 next day; Night: 14:00 to 12:00 next day — see
+Shift rules). The first punch in the window is the check-in, the last the
+check-out (first-in/last-out, as BioStar's T&A module does). Badges within 5
+minutes are one event. Consequences:
 
-Uploading a roster (`Upload Roster` in the dashboard, or
-`POST /api/shifts/roster/upload`) fills `ShiftAssignment` with one row per
-worker per scheduled shift date, and layers it on top of the punch
-classification above as the source of truth for *who was expected to work
-which shift*:
+- A missed or extra punch affects only the shift whose window it lands in.
+- The result doesn't depend on where a computation starts — the hourly run,
+  a full resync from any start date, and a manual refresh give identical
+  rows (tested).
+- A double shift is two rows. One badge at the changeover ends the first
+  shift and starts the second; with no changeover badge the split is made at
+  the scheduled time and flagged "implied".
+- Punches no expected shift claims (off-day work, a new worker's test punch,
+  unassigned workers) are still shown, classified by clock time and flagged
+  `unscheduled`, so a supervisor can record the exception.
+- A scheduled shift with no punches, once it has ended, is a `no-show`.
 
-- **No-show detection.** A roster entry with zero matching punches produces
-  a `no-show` summary row — impossible without a roster, since a worker with
-  literally no punches otherwise produces no row at all (see "still
-  outstanding" below for when this doesn't apply).
-- **Roster vs. actual mismatch.** If a worker's real punches classify to a
-  different shift than the roster named for that date, the summary is still
-  recorded under the shift they actually worked (so hours/lateness stay
-  correct), but `rosteredShiftId` is set to what was rostered — surfaced in
-  the dashboard as a "rostered: X" note — so the discrepancy is visible
-  rather than silently dropped.
-- **Nothing else changes.** The roster does not override which punches pair
-  into a check-in/check-out, or resolve which shift a punch belongs to —
-  that's still handled by time-of-day classification, which is already
-  unambiguous for realistic arrival/departure variance (see below).
+Rules: late = check-in more than `graceMinutes` (30) after the start, i.e.
+from 08:30:01 / 17:30:01; early check-out = before the scheduled end; no meal
+or break deduction. `regularHours` is the part of `hoursWorked` inside the
+scheduled shift. Statuses: `on-time`, `early`, `late`, `no-checkout`,
+`no-checkin`, `in-progress`, `no-show`, plus `lateIn`, `earlyCheckOut`,
+`hasMultiplePunches` flags.
 
-The template downloaded from `GET /api/shifts/roster/template` (an .xlsx
-with an `Instructions` sheet) is the exact format the parser expects:
-`Employee ID`, `Employee Name` (optional, for reference only), `Date`
-(`YYYY-MM-DD` — for a Night shift, the date the shift *starts*, i.e. the
-evening, not the following morning), `Shift` (must match a configured
-`Shift.name`). Re-uploading a row for the same Employee ID + Date replaces
-the previous assignment for that date; a bad row (unknown worker, unknown
-shift, bad date) is reported back per-row without blocking the rest of the
-file from importing. Uploads are scoped to the logged-in subcontractor —
-an Employee ID belonging to another subcontractor's worker is rejected, not
-silently imported. `sync/shiftRoster.js` has the parsing/validation logic;
-`test/shiftRosterTest.js` covers it.
+## Roles and approvals
 
-This also resolves what would otherwise be a real edge case: because the
-two shifts share a boundary with zero gap, a worker rotated straight from
-Night into Day the next morning (ending one shift and starting the next at
-~08:00, no rest between) could be ambiguous under a *range-based* matching
-approach — a check-in and check-out both near 08:00 could be misattributed
-to the wrong shift. Per-punch classification avoids this entirely: each
-punch is classified independently by which single anchor time (a specific
-shift-boundary instant) it's nearest to, so there's no shared range for two
-different shift instances to compete over. This is covered explicitly by
-`test/shiftSummaryTest.js`'s "EDGE CASE" checks.
+| Role | Sees | Does |
+|---|---|---|
+| System Admin | everything | any account, crews and cycles, shift rules, approves anything |
+| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+| Admin Assistant | everything | schedules and exceptions, approves escalated shifts |
+| Finance | approved records only | read-only, exports/PDF |
+| Shift Supervisor | their crew's records | approves their crew's shifts, records exceptions for their crew |
 
-Within a classified shift instance, the earliest check-in and latest
-check-out (First-In-Last-Out) are used as the shift's boundaries, discarding
-any punches in between — BioStar devices produce duplicate punches (a
-re-badge after a missed beep) more often than workers genuinely leave and
-return mid-shift. Any shift instance with more than one check-in or
-check-out is flagged `hasMultiplePunches`, visible in the dashboard as a
-"⚠ Multiple punches" tag, so FILO's inherent inability to distinguish noise
-from a genuine gap is surfaced rather than silently trusted.
+- Each crew's Day or Night shift on a date is one approval batch
+  (`ApprovalUnit` kind `crew-shift`). It becomes approvable when the shift
+  ends; the crew's supervisor gets an in-app reminder. Rows from other crews
+  covering that shift go to the supervisor of the crew on duty.
+- Unapproved 48 hours after that, it escalates to HR and the Admin
+  Assistant (in-app + email), who can then approve it.
+- Permanent Day/Night staff (and anyone not on a crew) are batched per
+  month (`hr-month`) for HR to approve after month end.
+- Approved rows are locked. A later recomputation that would change one (a
+  late-synced punch, a schedule fix) parks the new values in
+  `pendingValues`, flags `changedAfterApproval`, reopens the batch and
+  restarts its 48h clock. Finance keeps seeing the approved values until
+  it's re-approved.
 
-`status` is `'early'` | `'on-time'` | `'late'` | `'no-checkout'` | `'no-show'`
-and describes check-in timing/presence only. `earlyCheckOut` is a separate
-boolean (checked out more than `graceMinutes` before shift end) — kept
-independent of `status` because a worker can be late *and* leave early at
-once, the same reason `hasMultiplePunches` already rides alongside `status`
-rather than being folded into it. `early`/`late`/early-checkout are all
-measured against the same `graceMinutes` tolerance, symmetrically on both
-sides of the shift boundary.
+## Pattern profiling and cycle changes
 
-`computeSummaries()` runs automatically after every sync (see `server.js`),
-after every manual "Refresh" (see `routes/attendance.js`), and after every
-roster upload (see `routes/shiftRoster.js`), writing to
-`DailyAttendanceSummary` — this is what the dashboard reads for hours-worked
-and lateness (`GET /api/attendance/summary`), not raw `AttendanceLog` rows
-directly. Clicking a row opens the punch history modal
-(`GET /api/attendance/punches`), showing every raw punch behind it tagged
-`Used` or `Ignored (duplicate)`.
+Every night (`sync/profilingJob.js`, 03:30 EAT) each worker's last 28 days of
+punches are scored against every candidate schedule — permanent Day,
+permanent Night, and each phase of the crew rotations — by running the shift
+engine with it and counting complete shifts versus unexplained punches.
 
-Deliberately out of scope for now (per discussion with UCAA): overtime
-calculation (`hoursWorked` is informational only, no OT multiplier or
-threshold logic). Absence tracking is resolved for rostered workers (a
-roster entry with zero punches becomes a `no-show` row) but a worker with
-zero punches on a date with **no roster entry** still produces no summary
-row at all — there's no way to know they were expected to work without one.
+- **Pattern review (HR):** a worker whose punches confidently fit a
+  different schedule than they're on — e.g. now looks like permanent Day, or
+  moved crew — appears in Schedules → Pattern review, and HR is notified
+  (in-app + email) once per new suggestion. HR accepts (changes their
+  schedule from a chosen date) or dismisses.
+- **Crew cycle changes (System Admin):** if most of a crew has moved to a
+  different cycle over the last 14 days, a proposal with the detected cycle
+  and change date is created and the System Admin is notified. Applying it
+  adds a new effective-dated rotation; earlier dates keep the old one.
+  One worker swapping doesn't trigger it.
 
 ## Notes / resolved and outstanding
 
@@ -233,7 +234,7 @@ row at all — there's no way to know they were expected to work without one.
   build both boundaries in explicit UTC. The dashboard's day-grouping and
   "late"/hours computation are now handled entirely server-side in a fixed
   business timezone (East Africa Time, UTC+3, no DST) by
-  `computeDailySummaries.js`, rather than the viewer's browser-local time —
+  `sync/shiftEngine.js`, rather than the viewer's browser-local time —
   a subcontractor checking the portal from a different timezone no longer
   sees punches grouped into the wrong day or a wrong lateness call.
 - **Backward sync gap fixed:** the sync no longer walks forward only from
@@ -260,36 +261,35 @@ row at all — there's no way to know they were expected to work without one.
   Prisma transaction, so a crash partway through a day no longer leaves it
   half-synced (re-running was already safe either way, since every write is
   an idempotent upsert — this just removes the need to).
-- **No shift/overtime/absentee logic** — resolved for the shift/hours-
-  visibility part; see "Shift-aware attendance" above. Overtime calculation
-  remains deliberately out of scope (see below).
-- **No absence tracking fixed, for rostered workers:** uploading a shift
-  roster (`Upload Roster` / `POST /api/shifts/roster/upload`) makes
-  `ShiftAssignment` the source of truth for who was expected to work which
-  shift — a roster entry with zero matching punches now produces a
-  `no-show` summary row, and a mismatch between the rostered shift and what
-  a worker's punches actually show is flagged via `rosteredShiftId` rather
-  than silently overwritten. `status` also gained `'early'` (check-in well
-  before shift start) alongside the existing `'late'`/`'no-checkout'`, and
-  check-out timing is now tracked separately via the `earlyCheckOut` flag.
-  See "Shift-aware attendance" above.
+- **Day shifts recorded as Night (2026-09):** the alternation-based
+  check-in/check-out guess flipped every later shift after one missed or
+  doubled badge, and the flipped rows were never cleaned up. Replaced by the
+  schedule-driven engine and replace-on-recompute (see "How attendance is
+  worked out"); verified against BioStar's weekly T&A report for 21–25 Sep —
+  the raw punches matched BioStar exactly, the old classification had 181
+  BioStar-confirmed Day shifts stored as Night.
+- **Roster upload retired:** replaced by crews, permanent schedules and
+  per-date exceptions managed in the portal, with no-shows detected for
+  every scheduled shift.
+- **Roles and approvals added:** see "Roles and approvals".
+- **CSV export** now exports shift records (same visibility rules as the
+  dashboard) with times in EAT; it previously exported raw punches with UTC
+  times.
 
 **Still outstanding:**
 
-- Absence tracking only works for rostered worker/dates. A worker with zero
-  punches on a date with no roster entry still produces no summary row at
-  all, rather than a flagged absence — there's no way to know they were
-  expected to work without a roster.
+- BioStar's own T&A report has every casual on "ARK Casual Day" and no ARK
+  night shift, so it mis-reports night work (evening "Late In, Missing Punch
+  Out"). Automatic reconciliation against that report is deliberately not
+  built until a proper night shift/schedule exists in BioStar.
+- Unassigned workers' punches are classified by clock time only. That's
+  inherently ambiguous (a 17:00 badge could end a Day or start a Night), so
+  those rows are flagged `unscheduled` for a supervisor rather than trusted.
+- Cycle-change detection recognises the patterns in
+  `patternProfiler.CANDIDATE_PATTERNS` plus whatever the crews use; a
+  completely new pattern has to be set by the System Admin.
 - No overtime calculation. `hoursWorked` is informational only; there is no
   OT multiplier, threshold, or pay-code logic.
-- The roster upload has no admin/role distinction — any authenticated
-  portal account for a subcontractor can upload a roster for that
-  subcontractor's own workers (same trust boundary as the rest of the API;
-  there's still only 1–2 accounts total).
-- The classification approach assumes realistic arrival/departure variance
-  (minutes to a couple of hours from a shift boundary). A punch literally
-  half a shift early or late would be a data-quality problem under any
-  matching strategy, not specific to this design.
 - The `.env` file contains live-looking credentials in plaintext. Not a
   code issue, but confirm `.gitignore` excludes it before this repo is ever
   pushed to a shared remote.

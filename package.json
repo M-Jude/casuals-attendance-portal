@@ -9,7 +9,9 @@
     "dev": "vite",
     "sync": "node -e \"require('./sync/attendanceSync').syncAttendance().then(() => process.exit(0))\"",
     "seed:user": "node scripts/seedPortalUser.js",
-    "seed:shifts": "node scripts/seedShifts.js"
+    "seed:shifts": "node scripts/seedShifts.js",
+    "bootstrap:schedules": "node scripts/bootstrapSchedules.js",
+    "test": "node test/shiftEngineTest.js && node test/patternProfilerTest.js && node test/approvalLogicTest.js && node test/scheduleResolverTest.js && node test/mockSyncTest.js && node test/cookieExtractionTest.js"
   },
   "dependencies": {
     "@prisma/client": "^5.18.0",
@@ -21,6 +23,7 @@
     "json2csv": "^5.0.7",
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^3.0.3",
+    "nodemailer": "^6.10.1",
     "pdfkit": "^0.20.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

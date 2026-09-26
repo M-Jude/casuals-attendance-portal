@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
-import ShiftRosterUploadModal from './ShiftRosterUploadModal';
 import AttendanceAnalytics from './AttendanceAnalytics';
 import { STATUS_LABEL, STATUS_RANK, statusClassName } from './shiftStatus';
 import { downloadAuthenticated } from './downloadFile';
@@ -26,6 +25,14 @@ function formatDate(dateStr) {
   return new Date(`${dateStr}T00:00:00Z`).toLocaleDateString([], {
     day: '2-digit', month: 'short', timeZone: 'UTC'
   });
+}
+
+function approvalState(row) {
+  if (row.changedAfterApproval) {
+    return { key: 'changed', label: 'Changed', title: 'Changed after approval — the approved values stand until re-approved' };
+  }
+  if (row.approvedAt) return { key: 'approved', label: 'Approved', title: `Approved ${new Date(row.approvedAt).toLocaleString()}` };
+  return { key: 'pending', label: 'Waiting', title: 'Not yet approved' };
 }
 
 const SORT_OPTIONS = [
@@ -106,7 +113,7 @@ function groupRows(rows, groupBy) {
   return list;
 }
 
-export default function AttendanceDashboard({ token, onLogout }) {
+export default function AttendanceDashboard({ token, user, onLogout }) {
   // Defaults to just today + yesterday — a fast "what's happening now" view.
   // Everything below (analytics, table, exports) is derived from from/to, so
   // widening or narrowing this range cascades through all of it automatically.
@@ -118,11 +125,12 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
-  const [rosterModalOpen, setRosterModalOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
 
   const [filterId, setFilterId] = useState('');
   const [filterName, setFilterName] = useState('');
+  const [filterShift, setFilterShift] = useState('');
+  const [filterApproval, setFilterApproval] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
   const [groupBy, setGroupBy] = useState('date');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
@@ -220,13 +228,24 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const visibleRows = useMemo(() => {
     const idQuery = filterId.trim().toLowerCase();
     const nameQuery = filterName.trim().toLowerCase();
-    if (!idQuery && !nameQuery) return rows;
     return rows.filter(
       (r) =>
         (!idQuery || r.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
-        (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery))
+        (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery)) &&
+        (!filterShift || r.shift.name === filterShift) &&
+        (!filterApproval || approvalState(r).key === filterApproval)
     );
-  }, [rows, filterId, filterName]);
+  }, [rows, filterId, filterName, filterShift, filterApproval]);
+
+  // Worker+date pairs with both a Day and a Night row — a double shift.
+  const doubleShifts = useMemo(() => {
+    const seen = new Map();
+    for (const r of rows) {
+      const k = `${r.worker.id}|${r.date.slice(0, 10)}`;
+      seen.set(k, (seen.get(k) || 0) + 1);
+    }
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [rows]);
 
   const sortedRows = useMemo(() => sortRows(visibleRows, sortBy), [visibleRows, sortBy]);
   const groups = useMemo(() => groupRows(sortedRows, groupBy), [sortedRows, groupBy]);
@@ -248,7 +267,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   function renderRow(row) {
     const dateStr = row.date.slice(0, 10);
-    const rosterMismatch = row.rosteredShift && row.rosteredShift.id !== row.shift.id;
+    const approval = approvalState(row);
     return (
       <tr
         key={row.id}
@@ -262,19 +281,29 @@ export default function AttendanceDashboard({ token, onLogout }) {
         <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
         <td data-label="Shift">
           {row.shift.name}
-          {rosterMismatch && (
-            <div className="dash__roster-note" title="The roster expected a different shift than what the punches show">
-              rostered: {row.rosteredShift.name}
-            </div>
+          {doubleShifts.has(`${row.worker.id}|${dateStr}`) && <div className="dash__shift-note">double shift</div>}
+          {row.source === 'exception' && <div className="dash__shift-note">exception</div>}
+          {row.source === 'unscheduled' && (
+            <div className="dash__shift-note dash__shift-note--warn" title="Worked outside this worker's schedule — a supervisor can record an exception">unscheduled</div>
           )}
         </td>
-        <td className="mono" data-label="In">{formatTime(row.checkIn)}</td>
-        <td className="mono" data-label="Out">{formatTime(row.checkOut)}</td>
+        <td className="mono" data-label="In">
+          {formatTime(row.checkIn)}{row.checkInImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+        </td>
+        <td className="mono" data-label="Out">
+          {formatTime(row.checkOut)}{row.checkOutImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+        </td>
         <td className="mono" data-label="Hours">{row.hoursWorked ?? '—'}</td>
+        <td className="mono" data-label="Regular">{row.regularHours ?? '—'}</td>
         <td data-label="Status">
           <span className={`status status--${statusClassName(row.status)}`}>
             {STATUS_LABEL[row.status] || row.status}
           </span>
+          {row.lateIn && row.status !== 'late' && (
+            <span className="status status--flag" title="Checked in after the late threshold">
+              ⚠ Late in
+            </span>
+          )}
           {row.earlyCheckOut && (
             <span className="status status--flag" title="Checked out well before the shift's scheduled end">
               ⚠ Early checkout
@@ -285,6 +314,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
               ⚠ Multiple punches
             </span>
           )}
+        </td>
+        <td data-label="Approval">
+          <span className={`approval approval--${approval.key}`} title={approval.title}>{approval.label}</span>
         </td>
       </tr>
     );
@@ -302,7 +334,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
             <th>In</th>
             <th>Out</th>
             <th>Hours</th>
+            <th title="Hours inside the scheduled shift">Regular</th>
             <th>Status</th>
+            <th>Approval</th>
           </tr>
         </thead>
         <tbody>{rowsToRender.map(renderRow)}</tbody>
@@ -312,11 +346,6 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   return (
     <div className="dash">
-      <header className="dash__topbar">
-        <h1 className="dash__title">UCAA-ARK GROUP CASUALS MANAGEMENT SYSTEM</h1>
-        <button className="dash__signout" onClick={onLogout}>Sign out</button>
-      </header>
-
       <div className="dash__controlbar">
         <div className="dash__controlgroup">
           <div className="dash__controlgroup-label">Period</div>
@@ -329,16 +358,17 @@ export default function AttendanceDashboard({ token, onLogout }) {
               To
               <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
             </label>
-            <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
-              {syncing ? 'Syncing…' : 'Refresh'}
-            </button>
+            {user.role !== 'finance' && (
+              <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
+                {syncing ? 'Syncing…' : 'Refresh'}
+              </button>
+            )}
           </div>
         </div>
 
         <div className="dash__controlgroup">
           <div className="dash__controlgroup-label">Actions</div>
           <div className="dash__controlgroup-row">
-            <button className="dash__roster" onClick={() => setRosterModalOpen(true)}>Upload Roster</button>
             <button className="dash__export" onClick={handleExport}>Export CSV</button>
             <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
               {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
@@ -369,7 +399,26 @@ export default function AttendanceDashboard({ token, onLogout }) {
             />
           </label>
           <label>
-            Sort by
+            Shift
+            <select value={filterShift} onChange={(e) => setFilterShift(e.target.value)}>
+              <option value="">Both</option>
+              <option value="Day">Day</option>
+              <option value="Night">Night</option>
+            </select>
+          </label>
+          {user.role !== 'finance' && (
+            <label>
+              Approval
+              <select value={filterApproval} onChange={(e) => setFilterApproval(e.target.value)}>
+                <option value="">Any</option>
+                <option value="pending">Waiting</option>
+                <option value="approved">Approved</option>
+                <option value="changed">Changed after approval</option>
+              </select>
+            </label>
+          )}
+          <label>
+            Order by
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
               {SORT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -461,14 +510,6 @@ export default function AttendanceDashboard({ token, onLogout }) {
         />
       )}
 
-      {rosterModalOpen && (
-        <ShiftRosterUploadModal
-          token={token}
-          onClose={() => setRosterModalOpen(false)}
-          onUploaded={loadSummaries}
-        />
-      )}
-
       <style>{`
         .dash {
           min-height: 100vh;
@@ -478,38 +519,6 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding: 32px 40px;
           box-sizing: border-box;
         }
-        /* Identity bar — brand + the one account-level action. Deliberately
-           quiet: everything a user actually works with lives further down. */
-        .dash__topbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 16px;
-          padding-bottom: 16px;
-          margin-bottom: 20px;
-          border-bottom: 1px solid #24354F;
-        }
-        .dash__title {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 14px;
-          font-weight: 400;
-          letter-spacing: 0.06em;
-          color: #3E8E7E;
-          margin: 0;
-        }
-        .dash__signout {
-          border: none;
-          background: none;
-          color: #66768A;
-          font-size: 12px;
-          cursor: pointer;
-          font-family: inherit;
-          padding: 4px 0;
-        }
-        .dash__signout:hover {
-          color: #E8EDF2;
-        }
-
         /* Control bar — two clearly separated clusters: "what period am I
            looking at" (left) and "what can I do with it" (right). */
         .dash__controlbar {
@@ -569,7 +578,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
           border-bottom: 1px solid #1B2A40;
         }
 
-        .dash__refresh, .dash__roster, .dash__pdf, .dash__export, .dash__toggle-all {
+        .dash__refresh, .dash__pdf, .dash__export, .dash__toggle-all {
           border: 1px solid #24354F;
           background: transparent;
           color: #E8EDF2;
@@ -583,9 +592,6 @@ export default function AttendanceDashboard({ token, onLogout }) {
           cursor: default;
         }
         .dash__refresh:hover:not(:disabled) {
-          background: #16243A;
-        }
-        .dash__roster:hover {
           background: #16243A;
         }
         .dash__pdf {
@@ -765,11 +771,21 @@ export default function AttendanceDashboard({ token, onLogout }) {
           border-color: #8A6E1B;
           margin-left: 6px;
         }
-        .dash__roster-note {
+        .dash__shift-note {
           font-size: 11px;
-          color: #C9535A;
+          color: #8A99AC;
           margin-top: 2px;
         }
+        .dash__shift-note--warn {
+          color: #C9A227;
+        }
+        .approval {
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .approval--approved { color: #3E8E7E; }
+        .approval--pending { color: #8A99AC; }
+        .approval--changed { color: #C9A227; }
 
         @media (max-width: 640px) {
           .dash { padding: 20px; }

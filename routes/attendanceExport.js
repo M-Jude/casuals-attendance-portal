@@ -2,47 +2,72 @@ const express = require('express');
 const { Parser } = require('json2csv');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
+const { summaryVisibility } = require('../middleware/requireRole');
 
 const router = express.Router();
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Business-local (EAT) wall-clock time — the export previously printed UTC.
+function eatTime(date) {
+  if (!date) return '';
+  return new Date(date.getTime() + 3 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ');
+}
+
+function approvalState(row) {
+  if (row.changedAfterApproval) return 'changed after approval';
+  return row.approvedAt ? 'approved' : 'pending';
+}
+
+// One line per worker per shift — the same records the dashboard shows,
+// limited to what the user may see (Finance: approved only).
 router.get('/attendance/export', authenticate, async (req, res) => {
   const { from, to } = req.query;
+  if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '')) {
+    return res.status(400).json({ error: 'from and to (YYYY-MM-DD) are required.' });
+  }
 
   try {
-    const logs = await prisma.attendanceLog.findMany({
+    const rows = await prisma.dailyAttendanceSummary.findMany({
       where: {
-        timestamp: {
-          gte: from ? new Date(`${from}T00:00:00.000Z`) : undefined,
-          lte: to ? new Date(`${to}T23:59:59.999Z`) : undefined
-        },
-        // Same subcontractor scoping as GET /api/attendance — an export
-        // without this would let one subcontractor download another's data.
-        worker: { subcontractorName: req.user.subcontractorName }
+        date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+        ...summaryVisibility(req.user)
       },
-      include: { worker: { select: { name: true, biostarUserId: true } } },
-      orderBy: [{ worker: { name: 'asc' } }, { timestamp: 'asc' }]
+      include: {
+        worker: { select: { name: true, biostarUserId: true } },
+        shift: { select: { name: true } }
+      },
+      orderBy: [{ date: 'asc' }, { shiftId: 'asc' }, { worker: { name: 'asc' } }]
     });
 
-    if (logs.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ error: 'No records found for this date range.' });
     }
 
-    const rows = logs.map((log) => ({
-      worker_name: log.worker.name,
-      worker_id: log.worker.biostarUserId,
-      date: log.timestamp.toISOString().slice(0, 10),
-      time: log.timestamp.toISOString().slice(11, 16),
-      event_type: log.eventType
-    }));
-
     const parser = new Parser({
-      fields: ['worker_name', 'worker_id', 'date', 'time', 'event_type']
+      fields: ['date', 'shift', 'employee_id', 'worker_name', 'check_in', 'check_out', 'hours_worked', 'regular_hours',
+        'status', 'late_in', 'early_check_out', 'source', 'approval', 'approved_at', 'supervisor_comment']
     });
-    const csv = parser.parse(rows);
+    const csv = parser.parse(rows.map((r) => ({
+      date: r.date.toISOString().slice(0, 10),
+      shift: r.shift.name,
+      employee_id: r.worker.biostarUserId,
+      worker_name: r.worker.name,
+      check_in: eatTime(r.checkIn) + (r.checkInImplied ? ' (implied)' : ''),
+      check_out: eatTime(r.checkOut) + (r.checkOutImplied ? ' (implied)' : ''),
+      hours_worked: r.hoursWorked ?? '',
+      regular_hours: r.regularHours ?? '',
+      status: r.status,
+      late_in: r.lateIn ? 'yes' : '',
+      early_check_out: r.earlyCheckOut ? 'yes' : '',
+      source: r.source,
+      approval: approvalState(r),
+      approved_at: r.approvedAt ? eatTime(r.approvedAt) : '',
+      supervisor_comment: r.supervisorComment || ''
+    })));
 
-    const filename = `casuals-attendance_${from || 'all'}_to_${to || 'all'}.csv`;
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="casuals-attendance_${from}_to_${to}.csv"`);
     res.send(csv);
   } catch (err) {
     console.error('Attendance export failed:', err);

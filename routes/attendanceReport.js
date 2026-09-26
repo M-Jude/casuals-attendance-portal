@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
+const { summaryVisibility } = require('../middleware/requireRole');
 const { buildAttendanceReport, SORT_LABELS, GROUP_LABELS } = require('../reports/attendancePdf');
 
 const router = express.Router();
@@ -31,15 +32,14 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
       prisma.dailyAttendanceSummary.findMany({
         where: {
           date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
-          // Same tenant scoping as the other attendance routes.
-          worker: { subcontractorName: req.user.subcontractorName }
+          // Same role-based visibility as the dashboard (Finance: approved only).
+          ...summaryVisibility(req.user)
         },
         include: {
           worker: { select: { id: true, name: true, biostarUserId: true } },
-          shift: { select: { id: true, name: true } },
-          rosteredShift: { select: { id: true, name: true } }
+          shift: { select: { id: true, name: true } }
         },
-        orderBy: { date: 'desc' },
+        orderBy: [{ date: 'desc' }, { shiftId: 'asc' }],
         take: MAX_REPORT_ROWS + 1
       }),
       prisma.shift.findMany({ orderBy: { id: 'asc' } })

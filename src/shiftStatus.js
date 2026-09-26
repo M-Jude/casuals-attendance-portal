@@ -7,18 +7,22 @@ export const STATUS_LABEL = {
   'on-time': 'On time',
   late: 'Late',
   'no-checkout': 'No checkout',
-  'no-show': 'No-show'
+  'no-checkin': 'No check-in',
+  'no-show': 'No-show',
+  'in-progress': 'In progress'
 };
 
 // Sort order for "Status (issues first)" — total absence first, then a late
-// arrival, then a missing checkout, then early-arrival (informational, not
-// really a problem), then on-time last.
-export const STATUS_RANK = { 'no-show': 0, late: 1, 'no-checkout': 2, early: 3, 'on-time': 4 };
+// arrival, then a missing checkout/check-in, then early-arrival (informational,
+// not really a problem), then on-time, then shifts still running.
+export const STATUS_RANK = { 'no-show': 0, late: 1, 'no-checkout': 2, 'no-checkin': 2, early: 3, 'on-time': 4, 'in-progress': 5 };
 
 export function statusClassName(status) {
   switch (status) {
     case 'no-show': return 'critical';
-    case 'no-checkout': return 'pending';
+    case 'no-checkout':
+    case 'no-checkin': return 'pending';
+    case 'in-progress': return 'early';
     case 'late': return 'late';
     case 'early': return 'early';
     default: return 'ok';
