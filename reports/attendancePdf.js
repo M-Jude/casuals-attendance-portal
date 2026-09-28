@@ -547,7 +547,7 @@ function drawDetailRow(doc, y, row, cols, i) {
   if (row.checkInImplied || row.checkOutImplied) allFlags.push('Implied time');
   // Two lines fit in a row; the rest are summarised.
   const flags = allFlags.length > 2 ? [allFlags[0], `${allFlags[1]} +${allFlags.length - 2}`] : allFlags;
-  const sourceNote = row.source === 'exception' ? 'exception' : row.source === 'unscheduled' ? 'unscheduled' : null;
+  const sourceNote = { exception: 'exception', unscheduled: 'unscheduled', suggested: 'schedule not confirmed' }[row.source] || null;
 
   let x = M;
   for (const col of cols) {

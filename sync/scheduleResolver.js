@@ -32,11 +32,16 @@ function parseExceptionShifts(value) {
   return String(value || '').split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-function buildResolver({ schedules = [], rotations = [], exceptions = [], workers = [] }) {
+// profiles (optional) — WorkerProfile rows. A worker with no confirmed
+// schedule is expected on their profiled pattern (source 'suggested') until
+// HR confirms or changes it, instead of having their punches guessed from
+// clock time alone.
+function buildResolver({ schedules = [], rotations = [], exceptions = [], workers = [], profiles = [] }) {
   const schedulesByWorker = groupSortedByEffective(schedules, 'casualWorkerId');
   const rotationsByCrew = groupSortedByEffective(rotations, 'crewId');
   const exceptionByKey = new Map(exceptions.map((e) => [`${e.casualWorkerId}|${dateStrOf(e.date)}`, e]));
   const inactive = new Set(workers.filter((w) => w.status !== 'active').map((w) => w.id));
+  const profileByWorker = new Map(profiles.filter((p) => p.suggestedType).map((p) => [p.casualWorkerId, p]));
 
   function scheduleOn(workerId, dateStr) {
     return latestEffective(schedulesByWorker.get(workerId), dateStr);
@@ -60,11 +65,42 @@ function buildResolver({ schedules = [], rotations = [], exceptions = [], worker
     return [];
   }
 
+  // The profiler's suggestion, as a schedule, for a worker whose confirmed
+  // schedule is missing or "unassigned" on dateStr — null otherwise.
+  function suggestedScheduleOn(workerId, dateStr) {
+    const confirmed = scheduleOn(workerId, dateStr);
+    if (confirmed && confirmed.type !== 'unassigned') return null;
+    const p = profileByWorker.get(workerId);
+    if (!p) return null;
+    if (p.suggestedType === 'rotation') {
+      return { type: 'rotation', pattern: p.suggestedPattern, anchorDate: dateStrOf(p.suggestedAnchor) };
+    }
+    return { type: p.suggestedType, crewId: p.suggestedCrewId };
+  }
+
+  // Confirmed schedule, or the suggestion when there isn't one.
+  function effectiveScheduleOn(workerId, dateStr) {
+    const confirmed = scheduleOn(workerId, dateStr);
+    if (confirmed && confirmed.type !== 'unassigned') return confirmed;
+    return suggestedScheduleOn(workerId, dateStr) || confirmed;
+  }
+
+  function shiftsForSchedule(s, dateStr) {
+    if (!s) return [];
+    if (s.type === 'fixed-day') return ['Day'];
+    if (s.type === 'fixed-night') return ['Night'];
+    if (s.type === 'crew' && s.crewId) return crewShiftsOn(s.crewId, dateStr);
+    if (s.type === 'rotation') return rotationShiftsFor(s.pattern, s.anchorDate, dateStr);
+    return [];
+  }
+
   function expectedFor(workerId) {
     return (dateStr) => {
       if (inactive.has(workerId)) return { shifts: [], source: 'schedule' };
       const ex = exceptionByKey.get(`${workerId}|${dateStr}`);
       if (ex) return { shifts: parseExceptionShifts(ex.shifts), source: 'exception' };
+      const suggested = suggestedScheduleOn(workerId, dateStr);
+      if (suggested) return { shifts: shiftsForSchedule(suggested, dateStr), source: 'suggested' };
       return { shifts: scheduledShiftsOn(workerId, dateStr), source: 'schedule' };
     };
   }
@@ -73,7 +109,7 @@ function buildResolver({ schedules = [], rotations = [], exceptions = [], worker
     return crewIds.filter((id) => crewShiftsOn(id, dateStr).includes(shiftName));
   }
 
-  return { scheduleOn, rotationOn, crewShiftsOn, scheduledShiftsOn, expectedFor, crewsOnShift };
+  return { scheduleOn, effectiveScheduleOn, rotationOn, crewShiftsOn, scheduledShiftsOn, expectedFor, crewsOnShift };
 }
 
 // Stable signature of a schedule, used to compare a worker's current

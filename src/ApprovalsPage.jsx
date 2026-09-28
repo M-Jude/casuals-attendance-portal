@@ -23,6 +23,7 @@ function RowFlags({ row }) {
   return (
     <>
       {row.source === 'exception' && <span className="chip chip--info">Exception</span>}
+      {row.source === 'suggested' && <span className="chip" title="No confirmed schedule yet — judged against the pattern their punches fit">Schedule not confirmed</span>}
       {row.source === 'unscheduled' && <span className="chip chip--warn">Unscheduled</span>}
       {row.lateIn && row.status !== 'late' && <span className="chip chip--warn">Late in</span>}
       {row.earlyCheckOut && <span className="chip chip--warn">Early out</span>}

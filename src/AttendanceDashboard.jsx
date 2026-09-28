@@ -283,6 +283,9 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
           {row.shift.name}
           {doubleShifts.has(`${row.worker.id}|${dateStr}`) && <div className="dash__shift-note">double shift</div>}
           {row.source === 'exception' && <div className="dash__shift-note">exception</div>}
+          {row.source === 'suggested' && (
+            <div className="dash__shift-note" title="This worker has no confirmed schedule yet — judged against the pattern their punches fit, pending HR confirmation">schedule not confirmed</div>
+          )}
           {row.source === 'unscheduled' && (
             <div className="dash__shift-note dash__shift-note--warn" title="Worked outside this worker's schedule — a supervisor can record an exception">unscheduled</div>
           )}

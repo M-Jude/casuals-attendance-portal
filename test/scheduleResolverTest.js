@@ -37,6 +37,21 @@ check('No schedule before the first effective date', r.expectedFor(12)('2026-07-
 check('Inactive workers are expected on nothing', r.expectedFor(13)('2026-09-10').shifts.length === 0);
 check('scheduleKey: crew / fixed / none', scheduleKey(r.scheduleOn(10, '2026-09-10')) === 'crew:1' && scheduleKey(r.scheduleOn(11, '2026-09-16')) === 'fixed-day' && scheduleKey(null) === 'unassigned');
 
+// Profiled suggestion for workers without a confirmed schedule.
+const withProfiles = buildResolver({
+  schedules: [...schedules, { casualWorkerId: 20, effectiveFrom: d('2026-08-01'), type: 'unassigned', crewId: null }],
+  rotations, exceptions, workers: [...workers, { id: 20, status: 'active' }, { id: 21, status: 'active' }],
+  profiles: [
+    { casualWorkerId: 20, suggestedType: 'fixed-day' },
+    { casualWorkerId: 21, suggestedType: 'crew', suggestedCrewId: 2 },
+    { casualWorkerId: 10, suggestedType: 'fixed-night' } // has a confirmed crew — must be ignored
+  ]
+});
+check('Suggested: unassigned worker judged against their profiled permanent Day, marked suggested', withProfiles.expectedFor(20)('2026-09-10').shifts[0] === 'Day' && withProfiles.expectedFor(20)('2026-09-10').source === 'suggested');
+check('Suggested: worker with no schedule rows follows their profiled crew', withProfiles.expectedFor(21)('2026-09-03').shifts[0] === 'Day' && withProfiles.expectedFor(21)('2026-09-03').source === 'suggested');
+check('Suggested: a confirmed schedule always wins over the profile', withProfiles.expectedFor(10)('2026-09-01').shifts[0] === 'Day' && withProfiles.expectedFor(10)('2026-09-01').source === 'schedule');
+check('Suggested permanent Day worker → HR monthly approval', approvalCrewFor({ resolver: withProfiles, workerId: 20, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: [1, 2] }) === null);
+
 // Approval routing.
 const crewIds = [1, 2];
 check('Approval: crew worker on their own crew’s shift → their crew', approvalCrewFor({ resolver: r, workerId: 10, dateStr: '2026-09-01', shiftName: 'Day', tenantCrewIds: crewIds }) === 1);

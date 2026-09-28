@@ -165,7 +165,7 @@ model DailyAttendanceSummary {
   date                 DateTime // the shift's start date
   shiftId              Int
   shift                Shift    @relation(fields: [shiftId], references: [id])
-  source               String   @default("schedule") // schedule | exception | unscheduled
+  source               String   @default("schedule") // schedule | exception | suggested (profiled pattern, not yet confirmed) | unscheduled
   checkIn              DateTime?
   checkOut             DateTime?
   checkInImplied       Boolean  @default(false) // continuous double shift with no badge at the changeover

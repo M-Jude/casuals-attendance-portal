@@ -9,13 +9,15 @@ function dateOnly(dateStr) {
 }
 
 // Which approval batch a row belongs to:
+// (A worker with no confirmed schedule is routed by their profiled
+// pattern, the same one their shifts were classified against.)
 //   - permanent Day/Night workers → HR's monthly batch
 //   - a crew worker on their own crew's shift → their crew's supervisor
 //   - anyone else on a shift (a swap, cover or unscheduled worker) → the
 //     supervisor of the crew rostered on that shift that date
 //   - nobody rostered → the worker's own crew if they have one, else HR
 function approvalCrewFor({ resolver, workerId, dateStr, shiftName, tenantCrewIds }) {
-  const sched = resolver.scheduleOn(workerId, dateStr);
+  const sched = resolver.effectiveScheduleOn(workerId, dateStr);
   if (sched && (sched.type === 'fixed-day' || sched.type === 'fixed-night')) return null;
   if (sched && sched.type === 'crew' && sched.crewId && resolver.crewShiftsOn(sched.crewId, dateStr).includes(shiftName)) {
     return sched.crewId;
@@ -65,7 +67,7 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
 
   // Punches from the evening before the range (a Night starting then) to
   // midday after it (the last Night's check-out).
-  const [punches, schedules, rotations, exceptions, crews, existing] = await Promise.all([
+  const [punches, schedules, rotations, exceptions, crews, existing, profiles] = await Promise.all([
     prisma.attendanceLog.findMany({
       where: {
         casualWorkerId: { in: ids },
@@ -85,10 +87,11 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     prisma.crew.findMany(),
     prisma.dailyAttendanceSummary.findMany({
       where: { casualWorkerId: { in: ids }, date: { gte: dateOnly(fromDateStr), lte: dateOnly(toDateStr) } }
-    })
+    }),
+    prisma.workerProfile.findMany({ where: { casualWorkerId: { in: ids } } })
   ]);
 
-  const resolver = buildResolver({ schedules, rotations, exceptions, workers });
+  const resolver = buildResolver({ schedules, rotations, exceptions, workers, profiles });
   const punchesByWorker = new Map(ids.map((id) => [id, []]));
   for (const p of punches) punchesByWorker.get(p.casualWorkerId).push(p);
 

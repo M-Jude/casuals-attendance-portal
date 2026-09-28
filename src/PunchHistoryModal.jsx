@@ -84,6 +84,9 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           {summary.source === 'exception' && (
             <div className="modal__note">Worked as an exception to the usual schedule for this date.</div>
           )}
+          {summary.source === 'suggested' && (
+            <div className="modal__note">This worker has no confirmed schedule yet — judged against the pattern their punches fit, pending HR confirmation in Schedules → Pattern review.</div>
+          )}
           {summary.source === 'unscheduled' && (
             <div className="modal__flag">⚠ Worked outside this worker’s schedule. A supervisor can record an exception for this date.</div>
           )}

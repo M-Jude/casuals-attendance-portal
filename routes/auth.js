@@ -6,23 +6,30 @@ const authenticate = require('../middleware/authenticate');
 
 const router = express.Router();
 
-// Minimal in-memory rate limiting to blunt brute-force attempts against a
-// login endpoint with only 1-2 real accounts. For production-grade
+// Minimal in-memory rate limiting to blunt brute-force attempts. Only
+// FAILED attempts count, per email + IP — staff in one office share an IP,
+// so counting every login per IP would lock the sixth colleague out. A
+// successful login clears the account's count. For production-grade
 // protection (multiple server instances, IP spoofing resistance), swap this
 // for express-rate-limit backed by Redis instead.
-const MAX_ATTEMPTS = 5;
+const MAX_FAILED_ATTEMPTS = 5;
 const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const attemptsByIp = new Map();
+const failedAttempts = new Map();
 
-function isRateLimited(ip) {
-  const now = Date.now();
-  const record = attemptsByIp.get(ip);
-  if (!record || now - record.windowStart > WINDOW_MS) {
-    attemptsByIp.set(ip, { count: 1, windowStart: now });
+function isRateLimited(key) {
+  const record = failedAttempts.get(key);
+  if (!record) return false;
+  if (Date.now() - record.windowStart > WINDOW_MS) {
+    failedAttempts.delete(key);
     return false;
   }
-  record.count++;
-  return record.count > MAX_ATTEMPTS;
+  return record.count >= MAX_FAILED_ATTEMPTS;
+}
+
+function recordFailure(key) {
+  const record = failedAttempts.get(key);
+  if (!record || Date.now() - record.windowStart > WINDOW_MS) failedAttempts.set(key, { count: 1, windowStart: Date.now() });
+  else record.count++;
 }
 
 router.post('/login', async (req, res) => {
@@ -32,16 +39,20 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  if (isRateLimited(req.ip)) {
-    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+  const normalisedEmail = email.trim().toLowerCase();
+  const limitKey = `${req.ip}|${normalisedEmail}`;
+  if (isRateLimited(limitKey)) {
+    return res.status(429).json({ error: 'Too many failed login attempts. Try again in 15 minutes.' });
   }
 
   try {
-    const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
-    if (!user || !user.active) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    const user = await prisma.portalUser.findUnique({ where: { email: normalisedEmail } });
+    const valid = user && user.active && (await bcrypt.compare(password, user.passwordHash));
+    if (!valid) {
+      recordFailure(limitKey);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    failedAttempts.delete(limitKey);
 
     const token = jwt.sign(
       { userId: user.id, subcontractorName: user.subcontractorName },

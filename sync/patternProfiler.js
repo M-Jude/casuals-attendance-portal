@@ -109,6 +109,24 @@ function profileWorker({ punches, shiftsByName, fromDate, toDate, now, candidate
   return { results, suggestion };
 }
 
+// Profiles against the known crews' cycles plus permanent Day/Night first —
+// crew cycles are two days apart, so that comparison is far more decisive
+// than against every possible phase — but only keeps that answer when no
+// other rotation phase fits the punches better (a crew the system doesn't
+// know about yet must not be squeezed into the nearest known one). Falls
+// back to the all-phases comparison otherwise.
+function profileWithCrews({ punches, shiftsByName, fromDate, toDate, now, crewCandidates, allCandidates }) {
+  const wide = profileWorker({ punches, shiftsByName, fromDate, toDate, now, candidates: allCandidates });
+  if (!crewCandidates || !crewCandidates.some((c) => c.type === 'rotation')) return wide;
+  const narrow = profileWorker({ punches, shiftsByName, fromDate, toDate, now, candidates: crewCandidates });
+  if (!narrow.suggestion) return wide;
+  const best = wide.results[0];
+  const unknownRotationFitsBetter = best.schedule.type === 'rotation' &&
+    !crewCandidates.some((c) => c.type === 'rotation' && sameRotation(c, best.schedule, toDate)) &&
+    best.total > narrow.results[0].total;
+  return unknownRotationFitsBetter ? wide : narrow;
+}
+
 // Looks for a crew whose members have collectively moved to a different
 // rotation (a phase shift, or a different pattern) part-way through the
 // window. Returns a proposal { pattern, anchorDate, effectiveFrom, evidence }
@@ -176,6 +194,7 @@ function detectCycleChange({ current, members, shiftsByName, fromDate, toDate, n
 
 module.exports = {
   profileWorker,
+  profileWithCrews,
   detectCycleChange,
   candidateSchedules,
   expectedForSchedule,

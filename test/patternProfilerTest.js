@@ -1,7 +1,7 @@
 // Unit tests for sync/patternProfiler.js — pure, no database.
 //   node test/patternProfilerTest.js
 
-const { profileWorker, detectCycleChange, normaliseAnchor } = require('../sync/patternProfiler');
+const { profileWorker, profileWithCrews, candidateSchedules, detectCycleChange, normaliseAnchor } = require('../sync/patternProfiler');
 const { addDaysStr, rotationShiftsFor } = require('../sync/shiftEngine');
 
 const DAY = { id: 1, name: 'Day', startTime: '08:00', endTime: '17:00', graceMinutes: 30, earlyOutGraceMinutes: 0, earliestCheckIn: '05:00', latestCheckOut: '05:00' };
@@ -88,6 +88,27 @@ function check(label, passed) { checks.push([label, !!passed]); }
   const punches = [punchAt('2026-09-20', 8 * 60), punchAt('2026-09-20', 17 * 60)];
   const { suggestion } = profileWorker({ punches, shiftsByName, fromDate: FROM, toDate: TO, now: NOW });
   check('Sparse worker: no suggestion', suggestion === null);
+}
+
+// --- Placing workers on known crews: the right crew is found, and a
+// worker from a crew the system doesn't know about is NOT squeezed into
+// the nearest known one ---
+{
+  const crewA = { type: 'rotation', pattern: 'DDNNOO', anchorDate: '2026-09-01' };
+  const crewB = { type: 'rotation', pattern: 'DDNNOO', anchorDate: '2026-09-05' };
+  const crewCandidates = [{ type: 'fixed-day' }, { type: 'fixed-night' }, crewA, crewB];
+  const allCandidates = candidateSchedules(FROM);
+  const onB = simulate((d) => rotationShiftsFor('DDNNOO', '2026-09-05', d), 501);
+  const b = profileWithCrews({ punches: onB, shiftsByName, fromDate: FROM, toDate: TO, now: NOW, crewCandidates, allCandidates });
+  check('Known crews: a crew B worker is placed on crew B', b.suggestion && normaliseAnchor('DDNNOO', b.suggestion.schedule.anchorDate, TO) === normaliseAnchor('DDNNOO', '2026-09-05', TO));
+  let squeezed = 0;
+  for (let i = 0; i < 6; i++) {
+    const onUnknown = simulate((d) => rotationShiftsFor('DDNNOO', '2026-09-03', d), 600 + i);
+    const r = profileWithCrews({ punches: onUnknown, shiftsByName, fromDate: FROM, toDate: TO, now: NOW, crewCandidates, allCandidates });
+    const a = r.suggestion && r.suggestion.schedule.type === 'rotation' ? normaliseAnchor('DDNNOO', r.suggestion.schedule.anchorDate, TO) : null;
+    if (a === normaliseAnchor('DDNNOO', '2026-09-01', TO) || a === normaliseAnchor('DDNNOO', '2026-09-05', TO)) squeezed++;
+  }
+  check(`Unknown crew: none of 6 workers forced onto a known crew (got ${squeezed})`, squeezed === 0);
 }
 
 // --- Crew cycle change: members move two days along the cycle mid-window ---

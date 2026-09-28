@@ -150,8 +150,11 @@ minutes are one event. Consequences:
 - A double shift is two rows. One badge at the changeover ends the first
   shift and starts the second; with no changeover badge the split is made at
   the scheduled time and flagged "implied".
+- A worker with no confirmed schedule is judged against the pattern the
+  nightly profiling found for them (rows marked `suggested`) until HR
+  confirms it in Pattern review.
 - Punches no expected shift claims (off-day work, a new worker's test punch,
-  unassigned workers) are still shown, classified by clock time and flagged
+  workers with too few punches to profile) are still shown, classified by clock time and flagged
   `unscheduled`, so a supervisor can record the exception.
 - A scheduled shift with no punches, once it has ended, is a `no-show`.
 
