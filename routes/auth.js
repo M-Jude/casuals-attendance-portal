@@ -47,6 +47,8 @@ router.post('/login', async (req, res) => {
 
   try {
     const user = await prisma.portalUser.findUnique({ where: { email: normalisedEmail } });
+    // Sign-in attempts are audited against the account they named, if it exists.
+    if (user) res.locals.auditUser = user;
     const valid = user && user.active && (await bcrypt.compare(password, user.passwordHash));
     if (!valid) {
       recordFailure(limitKey);
@@ -67,11 +69,18 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Signing out is client-side (the token is dropped); this only records it
+// in the audit log.
+router.post('/logout', authenticate, (req, res) => res.status(204).end());
+
 // The signed-in account — the frontend uses this to decide which pages and
 // actions to show (the API enforces the same rules server-side).
 router.get('/me', authenticate, async (req, res) => {
-  const crew = req.user.crewId ? await prisma.crew.findUnique({ where: { id: req.user.crewId } }) : null;
-  res.json({ user: { ...req.user, crewName: crew ? crew.name : null } });
+  const [crew, worker] = await Promise.all([
+    req.user.crewId ? prisma.crew.findUnique({ where: { id: req.user.crewId } }) : null,
+    req.user.casualWorkerId ? prisma.casualWorker.findUnique({ where: { id: req.user.casualWorkerId }, select: { id: true, name: true, biostarUserId: true } }) : null
+  ]);
+  res.json({ user: { ...req.user, crewName: crew ? crew.name : null, worker } });
 });
 
 module.exports = router;

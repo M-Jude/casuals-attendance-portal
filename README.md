@@ -165,6 +165,24 @@ scheduled shift. Statuses: `on-time`, `early`, `late`, `no-checkout`,
 `no-checkin`, `in-progress`, `no-show`, plus `lateIn`, `earlyCheckOut`,
 `hasMultiplePunches` flags.
 
+A punch no schedule claims is still recorded ("unscheduled"). With two or
+more badges the punches settle the shift; a **single** badge is a guess,
+flagged "Shift guessed": it goes to the shift the worker's own complete
+shifts of the previous 28 days mostly were (at least 2, two-thirds one
+type), or by clock time when there's no clear pattern. A worker's first-ever
+schedule defaults to the day before their first punch, so it covers their
+whole history (`scripts/backdateFirstSchedules.js` fixes older ones). The
+"Crew" column in reports is the worker's own crew from their schedule — not
+the crew whose supervisor approves a cover shift. Confirming a profiled
+("suggested") schedule only relabels approved rows; it doesn't reopen them.
+
+A worker is only expected on shifts whose punch window closes after their
+first ever punch, so someone who joins mid-month isn't marked a no-show
+for the days before they started (a supervisor's exception still applies).
+After a change to how shifts are worked out, rebuild history with
+`npm run recompute` (or `-- --from YYYY-MM-DD --to YYYY-MM-DD`); the hourly
+job only covers the recent lookback window.
+
 ## Roles and approvals
 
 | Role | Sees | Does |
@@ -188,6 +206,150 @@ scheduled shift. Statuses: `on-time`, `early`, `late`, `no-checkout`,
   `pendingValues`, flags `changedAfterApproval`, reopens the batch and
   restarts its 48h clock. Finance keeps seeing the approved values until
   it's re-approved.
+
+## Live view
+
+The **Live** page shows a crew's current shift as it happens: who's on site
+(and for how long), who hasn't come in past the grace period, who has left,
+Late in / Early out, anyone else working the shift under that crew's
+supervisor, and the latest badges. Supervisors see their own crew; HR, the
+Admin Assistant and the System Admin pick a crew. It shows a shift from 3 h
+before it starts to 2 h after it ends; on an off day it shows the next one.
+
+The page refreshes every 30 s (while visible). The server pulls today's and
+yesterday's badges from BioStar every `LIVE_SYNC_MINUTES` (default 2; `0`
+turns it off) and recomputes only the workers with new badges
+(`services/liveSync.js`). Syncs share one lock, so the hourly full sync, a
+manual sync and the live sync never overlap. Logic: `sync/liveView.js`;
+API: `GET /api/live?crewId=`.
+
+## Accounts linked to workers
+
+A portal account can be linked to the account holder's worker record
+(`PortalUser.casualWorkerId`, one account per worker). Logic lives in
+`services/accountLink.js`.
+
+- **Supervisors must be workers.** HR picks the worker record when creating
+  the account; the supervisor leads the crew that worker rotates with (taken
+  from their schedule). Other roles may link a worker record optionally
+  (never the future Director role — `NO_WORKER_LINK`).
+- **Moving a supervisor.** Any change that takes a supervisor's worker record
+  off their crew (Schedules → Workers, Pattern review, or Users → Move to
+  another crew) needs HR's decision: stay supervisor of the new crew, or
+  become just a worker — which disables the portal account (there is no
+  worker-only login). The API answers 409 with a `decision` payload until
+  `supervisorAction: 'keep' | 'demote'` is given.
+- **Leaving BioStar.** Each sync marks workers who are no longer in the
+  BioStar casuals group inactive; a linked account is disabled and HR and the
+  System Admin are notified (in-app and email). It never reactivates anyone,
+  and does nothing if the group comes back missing more than half the
+  workforce (a bad BioStar response). An account whose worker is inactive
+  can't be re-enabled.
+- **My attendance.** Linked accounts get a page with their own shifts
+  (`GET /api/me/attendance`), whatever their role would otherwise see.
+
+## Reports
+
+The **Reports** page lists the reports the signed-in role can run. Pick one
+and a period (day, week Mon–Sun, month, date range or all time), preview it
+on screen or print the preview, and download it as PDF, Excel or CSV. Every
+report uses the same visibility rules as the dashboard (Finance: approved
+records only; supervisors: their crew only).
+
+| Report | Periods | What it shows |
+|---|---|---|
+| Daily attendance | day | everyone on one date, per shift |
+| Clock-in / clock-out timesheet | any (optionally one worker) | per worker, per day: actual clock-in and clock-out, every badge, minutes late / left early, hours |
+| Attendance summary | week, month, range, all | one line per worker: shifts, hours, late, no-shows, attendance % |
+| Individual worker | week, month, range, all | one worker shift by shift, plus week-by-week totals |
+| Attendance register | week, month, range (≤ 31 days) | timesheet grid, D / N / DN / A per date |
+| Hours & payroll | week, month, range, all | shifts and hours, approved vs awaiting approval |
+| Exceptions | any | late (minutes late), no-shows, missing punches, early outs, multiple punches, unscheduled, worst offenders |
+| Daily headcount | week, month, range, all | one line per date |
+| Crew performance | any | each crew shift by shift, with approval state |
+| Approval status | week, month, range, all | approval batches, who approved when, escalations (not Finance) |
+| Detailed records | any | every shift record with all fields |
+
+**Columns** lets the user untick columns they don't want; the choice applies
+to the preview and all three downloads (`&hide=key,key`) and is remembered
+per report in that browser. The keys each report offers are declared in
+`REPORT_COLUMNS` (reportCatalog.js); `test/reportsTest.js` fails if a
+builder adds a column that isn't listed there.
+
+The report preview, the attendance dashboard, approvals (list and batch),
+schedules (workers, pattern review, exceptions) and users are paged on
+screen (25/50/100/200 per page, remembered per list). The dashboard now
+loads the whole selected range (in chunks of 5,000, up to 50,000) instead of
+stopping at 500 records, so the overview always covers the full period.
+
+API: `GET /api/reports` (catalog for the user's role, with each report's columns),
+`GET /api/reports/workers`, and
+`GET /api/reports/:type?period=day|week|month|range|all&date=|month=|from=&to=&workerId=&shift=Day|Night&format=json|csv|xlsx|pdf`.
+The builders in `reports/reportCatalog.js` produce one format-neutral model
+that `renderCsv.js`, `renderXlsx.js` and `renderPdf.js` draw. The CSV has a
+title block, key figures and each section as its own table with a TOTAL
+line (UTF-8 with BOM so Excel opens it cleanly); the Excel file adds real
+formatting (styled headers, frozen panes, filters, coloured statuses). A PDF
+is capped at 6,000 table lines — use Excel/CSV beyond that.
+
+## On phones (installable app)
+
+Below 900px wide the portal switches to an app layout: a dark app bar with the
+page name and notifications, and a bottom tab bar with the first four pages.
+The remaining pages, the account, "Install app" and Sign out are in the More
+sheet. Below 760px, list tables become cards: each card's captions come from
+the column headings, copied onto the cells by `src/useCardTables.js`, so new
+tables need nothing extra. Report tables keep their grid and scroll sideways.
+
+The portal is a Progressive Web App (`public/manifest.webmanifest`,
+`public/sw.js`). On Android/Chrome, More → Install app adds it to the home
+screen. On iPhone, use Safari's Share → Add to Home Screen. It then opens full
+screen with its own icon. The service worker caches only the app shell, so it
+opens offline. `/api` calls always go to the network. Installing needs the
+portal served over HTTPS (or `localhost`). The worker is registered in
+production builds only. Icons are drawn by `node scripts/generateAppIcons.js`.
+
+## Audit logs
+
+Setup → Audit logs (System Admin only) lists what people have done in the
+portal. Each entry records who did it (name, email and role, copied into the
+entry), when, the IP address, the device (browser, OS, phone model, and
+whether it came from the installed app) and whether it succeeded.
+`middleware/auditTrail.js` writes an entry once the response has been sent,
+for:
+
+- sign-ins (including failed attempts and rate-limited ones) and sign-outs
+- every request that changes something: accounts, approvals, crews and
+  rotations, worker schedules, pattern review, exceptions, shift rules,
+  manual syncs, notifications read. A request that no rule describes is
+  still logged, under "Other".
+- every download (attendance CSV/PDF, report CSV/Excel/PDF, the audit export),
+  report previews, printed report previews and views of raw punches.
+
+Rejected requests (403, validation errors) are logged as failed, with the
+error message. Request data is stored with passwords and tokens masked.
+Changes to accounts and shift rules keep before and after values. Summaries
+name the worker, crew or batch involved. Routine page loads and polling are
+not logged. Entries are insert-only: nothing in the portal edits or deletes
+them.
+
+Every downloaded file says who downloaded it and when, with a reference such
+as `DL-20260930-0C167F`. The same reference appears on that download's audit
+entry. Where the stamp goes:
+
+- **PDF:** the footer of every page, plus the document properties.
+- **Excel:** the Overview sheet, every sheet's print footer, and the file
+  properties.
+- **Report CSV:** the header block.
+- **Attendance export CSV:** after the data, so the column header stays the
+  first line.
+- **Printed report previews:** carry a "Printed by … on …" line.
+
+IP addresses: behind a reverse proxy, set `TRUST_PROXY` so the real client
+address is taken from `X-Forwarded-For`. The default is `loopback`, a proxy on
+the same machine, which covers the Vite dev proxy. Use a hop count (`1`), an
+address or subnet, or `false`. The table grows with use. There is no automatic
+clean-up; keep entries as long as your retention policy requires.
 
 ## Pattern profiling and cycle changes
 

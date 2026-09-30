@@ -2,7 +2,7 @@
 // effective-dated WorkerSchedule and CrewRotation rows plus per-date
 // ShiftException overrides. Pure — callers load the rows and pass them in.
 
-const { rotationShiftsFor } = require('./shiftEngine');
+const { rotationShiftsFor, shiftGeometry } = require('./shiftEngine');
 
 function dateStrOf(d) {
   return d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
@@ -112,6 +112,26 @@ function buildResolver({ schedules = [], rotations = [], exceptions = [], worker
   return { scheduleOn, effectiveScheduleOn, rotationOn, crewShiftsOn, scheduledShiftsOn, expectedFor, crewsOnShift };
 }
 
+// Nobody can miss a shift before they start: a worker is only expected on
+// shifts whose punch window (up to the latest check-out) closes after their
+// first ever punch — a Night whose window holds the first punch still
+// counts, as that punch may be its check-out. Before that, and for a worker who has never punched, only a
+// supervisor's explicit exception makes a shift expected. Wraps
+// expectedFor(workerId); firstPunchMs is null when there are no punches.
+function startAtFirstPunch(expectedFor, firstPunchMs, shiftsByName) {
+  return (dateStr) => {
+    const e = expectedFor(dateStr) || { shifts: [], source: 'schedule' };
+    if (e.source === 'exception') return e;
+    if (firstPunchMs == null) return { ...e, shifts: [] };
+    const shifts = e.shifts.filter((name) => {
+      const s = shiftsByName[name];
+      if (!s) return true;
+      return shiftGeometry(s, dateStr).captureEnd > firstPunchMs;
+    });
+    return shifts.length === e.shifts.length ? e : { ...e, shifts };
+  };
+}
+
 // Stable signature of a schedule, used to compare a worker's current
 // schedule with the profiler's suggestion (WorkerProfile.suggestionKey).
 function scheduleKey(schedule) {
@@ -120,4 +140,4 @@ function scheduleKey(schedule) {
   return schedule.type;
 }
 
-module.exports = { buildResolver, parseExceptionShifts, dateStrOf, scheduleKey };
+module.exports = { buildResolver, parseExceptionShifts, dateStrOf, scheduleKey, startAtFirstPunch };

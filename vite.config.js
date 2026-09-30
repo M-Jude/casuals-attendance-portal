@@ -7,7 +7,8 @@ export default defineConfig({
     port: 5174,
     strictPort: true,
     proxy: {
-      '/api': 'http://localhost:4010'
+      // xfwd: pass the browser's IP on as X-Forwarded-For, for the audit log.
+      '/api': { target: 'http://localhost:4010', xfwd: true }
     }
   }
 });

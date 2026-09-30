@@ -44,17 +44,26 @@ const STATUS = {
   'in-progress': { label: 'In progress', fg: '#1F6FA8', bg: '#E2EFF9', bar: '#9CC7EA' }
 };
 const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-checkin', 'no-show', 'in-progress'];
-const STATUS_RANK = { 'no-show': 0, late: 1, 'no-checkout': 2, 'no-checkin': 2, early: 3, 'on-time': 4, 'in-progress': 5 };
-
-const SORT_LABELS = {
-  'date-desc': 'Date (newest first)',
-  'date-asc': 'Date (oldest first)',
-  'name-asc': 'Name (A-Z)',
-  'name-desc': 'Name (Z-A)',
-  'id-asc': 'Employee ID (A-Z)',
-  'id-desc': 'Employee ID (Z-A)',
-  status: 'Status (issues first)'
+// Sorts, as "<field>-<asc|desc>" — the same fields as the dashboard's
+// "Order by" and clickable headings (SORT_FIELDS in AttendanceDashboard.jsx).
+// Status sorts Late in + Early out first, then Late in, then Early out.
+const TAG_ORDER = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 };
+function approvalWord(r) {
+  if (r.changedAfterApproval) return 'Changed';
+  return r.approvedAt ? 'Approved' : 'Waiting';
+}
+const SORT_FIELDS = {
+  date: { get: (r) => new Date(r.date).getTime(), labels: ['Date (oldest first)', 'Date (newest first)'] },
+  name: { get: (r) => r.worker.name, labels: ['Name (A-Z)', 'Name (Z-A)'] },
+  id: { get: (r) => r.worker.biostarUserId, labels: ['Employee ID (A-Z)', 'Employee ID (Z-A)'] },
+  shift: { get: (r) => r.shift.name, labels: ['Shift (Day first)', 'Shift (Night first)'] },
+  in: { get: (r) => (r.checkIn ? new Date(r.checkIn).getTime() : null), labels: ['Clock in (earliest first)', 'Clock in (latest first)'] },
+  out: { get: (r) => (r.checkOut ? new Date(r.checkOut).getTime() : null), labels: ['Clock out (earliest first)', 'Clock out (latest first)'] },
+  hours: { get: (r) => r.hoursWorked, labels: ['Hours (fewest first)', 'Hours (most first)'] },
+  status: { get: (r) => TAG_ORDER[rowTags(r).join(',')], labels: ['Status (Late in / Early out first)', 'Status (Early out first)'] },
+  approval: { get: (r) => approvalWord(r), labels: ['Approval (A-Z)', 'Approval (Z-A)'] }
 };
+const SORT_LABELS = Object.fromEntries(Object.entries(SORT_FIELDS).flatMap(([f, { labels }]) => [[`${f}-asc`, labels[0]], [`${f}-desc`, labels[1]]]));
 const GROUP_LABELS = { date: 'Grouped by date', worker: 'Grouped by employee', none: 'No grouping' };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -109,19 +118,21 @@ const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
 
 // ---------- view preparation (mirrors the dashboard's filter/sort/group) ----------
 
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 function sortRows(rows, sortBy) {
-  const out = [...rows];
-  const byId = (a, b) => a.worker.biostarUserId.localeCompare(b.worker.biostarUserId, undefined, { numeric: true });
-  switch (sortBy) {
-    case 'date-asc': out.sort((a, b) => a.date - b.date); break;
-    case 'name-asc': out.sort((a, b) => a.worker.name.localeCompare(b.worker.name)); break;
-    case 'name-desc': out.sort((a, b) => b.worker.name.localeCompare(a.worker.name)); break;
-    case 'id-asc': out.sort(byId); break;
-    case 'id-desc': out.sort((a, b) => byId(b, a)); break;
-    case 'status': out.sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]); break;
-    default: out.sort((a, b) => b.date - a.date); // date-desc
-  }
-  return out;
+  const [field, dirWord] = String(sortBy).split('-');
+  const f = SORT_FIELDS[field] || SORT_FIELDS.date;
+  const dir = SORT_FIELDS[field] ? (dirWord === 'desc' ? -1 : 1) : -1; // default: newest first
+  const empty = (v) => v === null || v === undefined || v === '';
+  return rows
+    .map((r, i) => ({ r, i, v: f.get(r) }))
+    .sort((a, b) => {
+      if (empty(a.v) !== empty(b.v)) return empty(a.v) ? 1 : -1; // empties last
+      if (empty(a.v)) return a.i - b.i;
+      const c = typeof a.v === 'number' && typeof b.v === 'number' ? a.v - b.v : collator.compare(String(a.v), String(b.v));
+      return dir * c || a.i - b.i;
+    })
+    .map((x) => x.r);
 }
 
 function countByStatus(rows) {
@@ -523,13 +534,25 @@ function detailCols(showDate) {
   return fixed;
 }
 
-function drawStatusPill(doc, status, x, cy) {
-  const st = STATUS[status] || { label: status, fg: C.muted, bg: C.zebra };
-  doc.font('Helvetica-Bold').fontSize(6.6);
+// The Status column shows only Late in / Early out (blank otherwise).
+const TAG_PILL = {
+  'late-in': { label: 'Late in', fg: STATUS.late.fg, bg: STATUS.late.bg },
+  'early-out': { label: 'Early out', fg: STATUS['no-show'].fg, bg: STATUS['no-show'].bg }
+};
+function rowTags(row) {
+  const tags = [];
+  if (row.status === 'late' || row.lateIn) tags.push('late-in');
+  if (row.earlyCheckOut) tags.push('early-out');
+  return tags;
+}
+
+function drawStatusPill(doc, status, x, cy, h = 13, size = 6.6) {
+  const st = TAG_PILL[status] || STATUS[status] || { label: status, fg: C.muted, bg: C.zebra };
+  doc.font('Helvetica-Bold').fontSize(size);
   const label = safe(st.label);
   const w = doc.widthOfString(label) + 12;
-  doc.roundedRect(x, cy - 6.5, w, 13, 6.5).fill(st.bg);
-  txt(doc, label, x, cy - 3.3, { size: 6.6, font: 'Helvetica-Bold', color: st.fg, width: w, align: 'center' });
+  doc.roundedRect(x, cy - h / 2, w, h, h / 2).fill(st.bg);
+  txt(doc, label, x, cy - size / 2, { size, font: 'Helvetica-Bold', color: st.fg, width: w, align: 'center' });
 }
 
 function drawDetailRow(doc, y, row, cols, i) {
@@ -541,13 +564,12 @@ function drawDetailRow(doc, y, row, cols, i) {
   const allFlags = [];
   if (row.changedAfterApproval) allFlags.push('Changed after approval');
   else if (!row.approvedAt) allFlags.push('Not yet approved');
-  if (row.lateIn && row.status !== 'late') allFlags.push('Late in');
-  if (row.earlyCheckOut) allFlags.push('Early check-out');
   if (row.hasMultiplePunches) allFlags.push('Multiple punches');
   if (row.checkInImplied || row.checkOutImplied) allFlags.push('Implied time');
   // Two lines fit in a row; the rest are summarised.
   const flags = allFlags.length > 2 ? [allFlags[0], `${allFlags[1]} +${allFlags.length - 2}`] : allFlags;
-  const sourceNote = { exception: 'exception', unscheduled: 'unscheduled', suggested: 'schedule not confirmed' }[row.source] || null;
+  const guessed = row.source === 'unscheduled' && (!row.checkIn || !row.checkOut);
+  const sourceNote = guessed ? 'shift guessed' : { exception: 'exception', unscheduled: 'unscheduled', suggested: 'schedule not confirmed' }[row.source] || null;
 
   let x = M;
   for (const col of cols) {
@@ -582,9 +604,12 @@ function drawDetailRow(doc, y, row, cols, i) {
         txt(doc, h || '-', px, mid - 4, { size: 8, color: h ? C.ink : C.faint });
         break;
       }
-      case 'status':
-        drawStatusPill(doc, row.status, x + 6, mid);
+      case 'status': {
+        const tags = rowTags(row);
+        if (tags.length === 1) drawStatusPill(doc, tags[0], x + 6, mid);
+        else if (tags.length === 2) tags.forEach((t, k) => drawStatusPill(doc, t, x + 6, mid - 5.5 + k * 11, 10, 5.8));
         break;
+      }
       case 'flags':
         flags.forEach((f, k) => {
           const fy = flags.length === 1 ? mid - 3 : mid - 8 + k * 8.4;
@@ -679,7 +704,8 @@ function drawNotes(doc, cur, shifts) {
     ['No checkout', 'A check-in was recorded but no check-out. Late/on-time timing is not classified for these records.'],
     ['No check-in', 'A check-out was recorded but no check-in for that shift.'],
     ['No-show', 'The worker was scheduled for the shift (crew rotation, permanent schedule or a supervisor exception) but has no punches for it.'],
-    ['Flags', `"Early check-out" means leaving before the scheduled shift end. "Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
+    ['Status', 'The Status column shows only "Late in" (checked in after the grace period) and "Early out" (left before the scheduled shift end), or both. It is blank for every other record.'],
+    ['Flags', `"Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
     ['Hours', 'Check-out minus check-in. No meal or break deduction and no overtime rules are applied.'],
     ['Approval', `Records are approved by the crew's supervisor after each shift (escalated to HR and the Admin Assistant after 48 hours), or by HR at month end for permanent staff. Approved records are locked; later changes show as "Changed after approval" until re-approved.`],
     ['Times', `All times are East Africa Time (EAT, UTC+3). Shifts: ${shiftLine}. Night shifts are dated by the evening they start.`]
@@ -718,7 +744,10 @@ function drawFooter(doc, meta, page, pages) {
   const y = PAGE_H - 34;
   doc.moveTo(M, y).lineTo(M + W, y).lineWidth(0.6).strokeColor(C.line).stroke();
   txt(doc, `UCAA Casuals  |  Attendance Report  |  ${meta.subcontractorName}`, M, y + 8, { size: 7, color: C.muted });
-  txt(doc, `Confidential - generated ${fmtStamp(meta.generatedAt)}`, M, y + 18, { size: 6.4, color: C.faint });
+  const stampLine = meta.download
+    ? `Confidential - downloaded by ${meta.download.by} on ${meta.download.atText} - Ref ${meta.download.ref}`
+    : `Confidential - generated ${fmtStamp(meta.generatedAt)}`;
+  txt(doc, fit(doc, stampLine, W - 70, 'Helvetica', 6.4), M, y + 18, { size: 6.4, color: C.faint });
   txt(doc, `Page ${page} of ${pages}`, M, y + 8, { size: 7.5, font: 'Helvetica-Bold', color: C.navy, width: W, align: 'right' });
 }
 
@@ -740,7 +769,8 @@ function buildAttendanceReport({ rows, shifts, meta }) {
     info: {
       Title: `Attendance Report ${meta.from} to ${meta.to}`,
       Author: 'UCAA Casuals Attendance Portal',
-      Subject: `Casuals attendance for ${meta.subcontractorName}`,
+      Subject: meta.download ? meta.download.text : `Casuals attendance for ${meta.subcontractorName}`,
+      ...(meta.download ? { Keywords: `download-ref:${meta.download.ref}` } : {}),
       Creator: 'UCAA Casuals Attendance Portal'
     }
   });
@@ -778,4 +808,4 @@ function buildAttendanceReport({ rows, shifts, meta }) {
   return doc;
 }
 
-module.exports = { buildAttendanceReport, SORT_LABELS, GROUP_LABELS };
+module.exports = { buildAttendanceReport, SORT_LABELS, GROUP_LABELS, C, STATUS, safe, txt, fit, emblem };

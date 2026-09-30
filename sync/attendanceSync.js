@@ -1,5 +1,6 @@
 const prisma = require('../prismaClient');
 const { fetchPunchLogsForDate, fetchGroupUsers } = require('./biostarClient');
+const { syncWorkerStatuses } = require('../services/accountLink');
 
 const CASUALS_GROUP_NAME = process.env.BIOSTAR_CASUALS_GROUP_NAME || 'CASUALS';
 
@@ -41,6 +42,13 @@ async function provisionCasualWorkers() {
   }
 
   console.log(`Provisioned ${groupUsers.length} worker(s) from BioStar group "${CASUALS_GROUP_NAME}".`);
+
+  // Workers who left the group become inactive, and their portal accounts
+  // are disabled.
+  const statuses = await syncWorkerStatuses(groupUsers.map((u) => u.userId));
+  if (statuses.deactivated) {
+    console.log(`Deactivated ${statuses.deactivated} worker(s) no longer in the group; disabled ${statuses.accountsDisabled} portal account(s).`);
+  }
   return groupUsers.length;
 }
 
@@ -56,11 +64,22 @@ function getSyncStartDate() {
   return toDateStr(fallback);
 }
 
+// Returns { created, skipped, changedWorkerIds } — changedWorkerIds are the
+// workers with a punch that is new or whose time changed, so the live sync
+// only recomputes those.
 async function syncOneDate(dateStr) {
   const records = await fetchPunchLogsForDate(dateStr);
 
   let created = 0;
   let skipped = 0;
+  const changedWorkerIds = new Set();
+  const punchIds = records.map((r) => r.original_log?.id).filter(Boolean).map(String);
+  const known = new Map(
+    (punchIds.length
+      ? await prisma.attendanceLog.findMany({ where: { biostarEventId: { in: punchIds } }, select: { biostarEventId: true, timestamp: true } })
+      : []
+    ).map((p) => [p.biostarEventId, new Date(p.timestamp).getTime()])
+  );
 
   // Wrapped in a transaction so a crash partway through a day's records
   // doesn't leave that day half-synced. Re-running is still safe either way
@@ -105,6 +124,7 @@ async function syncOneDate(dateStr) {
       }
 
       const eventType = mapPunchType(record.type);
+      if (known.get(String(punchId)) !== timestamp.getTime()) changedWorkerIds.add(worker.id);
 
       // update (not just create) so a correction BioStar makes to an
       // already-synced punch — this endpoint is literally named
@@ -130,7 +150,24 @@ async function syncOneDate(dateStr) {
     }
   });
 
-  return { created, skipped };
+  return { created, skipped, changedWorkerIds: [...changedWorkerIds] };
+}
+
+// The live sync: today's and yesterday's punches only (yesterday so a Night
+// shift's morning badges and anything BioStar corrects overnight are
+// caught). Dates here are UTC, as for the full sync; EAT midnight to 03:00
+// falls on the previous UTC date, which is why yesterday is always included.
+async function syncRecent() {
+  const today = toDateStr(new Date());
+  const yesterday = toDateStr(new Date(Date.now() - 24 * 3600 * 1000));
+  const changed = new Set();
+  let created = 0;
+  for (const dateStr of [yesterday, today]) {
+    const r = await syncOneDate(dateStr);
+    created += r.created;
+    r.changedWorkerIds.forEach((id) => changed.add(id));
+  }
+  return { created, changedWorkerIds: [...changed] };
 }
 
 async function syncAttendance() {
@@ -159,4 +196,4 @@ async function syncAttendance() {
   console.log(`Sync complete: ${totalCreated} punches processed/updated, ${totalSkipped} skipped (unrecognized worker, inactive worker, or malformed record).`);
 }
 
-module.exports = { syncAttendance };
+module.exports = { syncAttendance, syncRecent };

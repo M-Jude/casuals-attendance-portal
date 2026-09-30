@@ -84,7 +84,7 @@ router.get('/approvals', authenticate, requireRole(...APPROVERS), async (req, re
   if (status === 'approved') where.status = 'approved';
 
   try {
-    const units = await prisma.approvalUnit.findMany({ where, orderBy: [{ dueAt: 'desc' }], take: 300 });
+    const units = await prisma.approvalUnit.findMany({ where, orderBy: [{ dueAt: 'desc' }], take: 2000 });
     res.json({ units: await describeUnits(units, req.user) });
   } catch (err) {
     console.error('Failed to list approvals:', err);

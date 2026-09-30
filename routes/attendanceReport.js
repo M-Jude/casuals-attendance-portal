@@ -3,6 +3,7 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { summaryVisibility } = require('../middleware/requireRole');
 const { buildAttendanceReport, SORT_LABELS, GROUP_LABELS } = require('../reports/attendancePdf');
+const { downloadStamp } = require('../services/audit');
 
 const router = express.Router();
 
@@ -73,7 +74,8 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
         generatedAt: new Date(),
         filters: { id: idQuery, name: nameQuery },
         sortBy,
-        groupBy
+        groupBy,
+        download: downloadStamp(req, res)
       }
     });
 

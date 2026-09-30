@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { STATUS_LABEL, statusClassName } from './shiftStatus';
+import { TAG_LABEL, statusTags, isGuessed, GUESSED_TITLE } from './shiftStatus';
+import StatusTags from './StatusTags';
+import { useSort } from './useSort';
+
+// Status column sort: Late in + Early out, then Late in, then Early out, then blank.
+const STATUS_ORDER_KEY = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 };
 import { formatDateLabel, formatDateTime, formatTime } from './api';
+import { usePagination } from './Pagination';
 
 function unitState(u) {
   if (u.status === 'approved') return { label: 'Approved', cls: 'chip--ok' };
@@ -25,8 +31,7 @@ function RowFlags({ row }) {
       {row.source === 'exception' && <span className="chip chip--info">Exception</span>}
       {row.source === 'suggested' && <span className="chip" title="No confirmed schedule yet — judged against the pattern their punches fit">Schedule not confirmed</span>}
       {row.source === 'unscheduled' && <span className="chip chip--warn">Unscheduled</span>}
-      {row.lateIn && row.status !== 'late' && <span className="chip chip--warn">Late in</span>}
-      {row.earlyCheckOut && <span className="chip chip--warn">Early out</span>}
+      {isGuessed(row) && <span className="chip chip--warn" title={GUESSED_TITLE}>Shift guessed</span>}
       {row.hasMultiplePunches && <span className="chip chip--warn">Multiple punches</span>}
       {(row.checkInImplied || row.checkOutImplied) && <span className="chip">Implied time</span>}
     </>
@@ -39,7 +44,8 @@ function PendingChange({ row }) {
   if (p.deleted) return <div className="small" style={{ color: 'var(--warn)' }}>Will be removed — no longer supported by the punches.</div>;
   return (
     <div className="small" style={{ color: 'var(--warn)' }}>
-      Changed since approval → now {formatTime(p.checkIn)}–{formatTime(p.checkOut)} · {STATUS_LABEL[p.status] || p.status}
+      Changed since approval → now {formatTime(p.checkIn)}–{formatTime(p.checkOut)}
+      {statusTags(p).map((t) => ` · ${TAG_LABEL[t]}`).join('')}
       {p.hoursWorked != null ? ` · ${p.hoursWorked} h` : ''}
     </div>
   );
@@ -51,6 +57,17 @@ function UnitDetail({ api, id, onBack, onApproved }) {
   const [comment, setComment] = useState('');
   const [rowComments, setRowComments] = useState({});
   const [busy, setBusy] = useState(false);
+  // Comments typed on one page are kept when paging — they live in rowComments.
+  const { sorted: sortedRows, th, sortKey } = useSort(data?.rows || [], {
+    worker: (r) => r.worker.name,
+    date: (r) => r.date,
+    shift: (r) => r.shift.name,
+    in: (r) => r.checkIn,
+    out: (r) => r.checkOut,
+    hours: { get: (r) => r.hoursWorked, first: 'desc' },
+    status: (r) => STATUS_ORDER_KEY[statusTags(r).join(',')]
+  });
+  const { pageItems: pageRows, pager } = usePagination(sortedRows, { id: 'approval-rows', defaultSize: 50, noun: 'records', resetKey: `${id}|${sortKey}` });
 
   useEffect(() => {
     setData(null);
@@ -111,19 +128,19 @@ function UnitDetail({ api, id, onBack, onApproved }) {
       <table className="table">
         <thead>
           <tr>
-            <th>Worker</th>
-            {isMonth && <th>Date</th>}
-            <th>Shift</th>
-            <th>In</th>
-            <th>Out</th>
-            <th>Hours</th>
-            <th>Status</th>
+            {th('worker', 'Worker')}
+            {isMonth && th('date', 'Date')}
+            {th('shift', 'Shift')}
+            {th('in', 'In')}
+            {th('out', 'Out')}
+            {th('hours', 'Hours')}
+            {th('status', 'Status')}
             <th>Flags</th>
             <th style={{ width: '26%' }}>Comment</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {pageRows.map((r) => (
             <tr key={r.id}>
               <td>
                 {r.worker.name}
@@ -135,9 +152,7 @@ function UnitDetail({ api, id, onBack, onApproved }) {
               <td className="mono">{formatTime(r.checkOut)}</td>
               <td className="mono">{r.hoursWorked ?? '—'}</td>
               <td>
-                <span className={`chip chip--${{ ok: 'ok', late: 'warn', critical: 'critical', early: 'info', pending: '' }[statusClassName(r.status)] || ''}`}>
-                  {STATUS_LABEL[r.status] || r.status}
-                </span>
+                <StatusTags row={r} />
                 <PendingChange row={r} />
               </td>
               <td><RowFlags row={r} /></td>
@@ -159,6 +174,7 @@ function UnitDetail({ api, id, onBack, onApproved }) {
           ))}
         </tbody>
       </table>
+      {pager}
 
       <div className="panel" style={{ marginTop: 20 }}>
         <label className="field">
@@ -193,6 +209,16 @@ export default function ApprovalsPage({ api, user, onChanged }) {
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState(null);
   const canSeeAll = ['sysadmin', 'hr', 'admin_assistant'].includes(user.role);
+  const STATE_ORDER = { Escalated: 0, 'Changed — re-approve': 1, 'Awaiting approval': 2, 'Shift in progress': 3, Approved: 4 };
+  const issues = (b) => (b.late || 0) + (b['no-show'] || 0) + (b['no-checkout'] || 0) + (b['no-checkin'] || 0);
+  const { sorted: sortedUnits, th, sortKey } = useSort(units, {
+    batch: (u) => u.label,
+    state: (u) => STATE_ORDER[unitState(u).label],
+    records: { get: (u) => u.rows, first: 'desc' },
+    issues: { get: (u) => issues(u.byStatus), first: 'desc' },
+    due: { get: (u) => u.dueAt, first: 'desc' }
+  });
+  const { pageItems: pageUnits, pager } = usePagination(sortedUnits, { id: 'approvals', defaultSize: 25, noun: 'batches', resetKey: `${status}|${scopeAll}|${sortKey}` });
 
   const load = useCallback(() => {
     setLoading(true);
@@ -256,15 +282,15 @@ export default function ApprovalsPage({ api, user, onChanged }) {
         <table className="table">
           <thead>
             <tr>
-              <th>Batch</th>
-              <th>State</th>
-              <th>Records</th>
-              <th>Needs a look</th>
-              <th>Approvable from</th>
+              {th('batch', 'Batch')}
+              {th('state', 'State', { title: 'Sort by state — escalated first' })}
+              {th('records', 'Records')}
+              {th('issues', 'Needs a look', { title: 'Sort by number of late arrivals, no-shows and missing punches' })}
+              {th('due', 'Approvable from')}
             </tr>
           </thead>
           <tbody>
-            {units.map((u) => {
+            {pageUnits.map((u) => {
               const state = unitState(u);
               return (
                 <tr key={u.id} className="is-clickable" onClick={() => setOpenId(u.id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setOpenId(u.id); }}>
@@ -285,6 +311,7 @@ export default function ApprovalsPage({ api, user, onChanged }) {
           </tbody>
         </table>
       )}
+      {!loading && pager}
     </div>
   );
 }

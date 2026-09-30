@@ -47,6 +47,8 @@ router.put('/shifts/:id', authenticate, requireRole('sysadmin', 'hr'), async (re
     }
 
     const updated = await prisma.shift.update({ where: { id }, data: { ...data, updatedById: req.user.id } });
+    // The audit entry keeps the old and new values side by side.
+    res.locals.audit = { details: { before: Object.fromEntries(Object.keys(data).map((k) => [k, shift[k]])), after: data } };
 
     // Rules changed — rebuild the recent window so it reflects them.
     // Approved rows stay as approved and are flagged for re-approval if the

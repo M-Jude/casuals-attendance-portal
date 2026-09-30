@@ -27,6 +27,7 @@ async function authenticate(req, res, next) {
       name: user.name,
       role: user.role,
       crewId: user.crewId,
+      casualWorkerId: user.casualWorkerId,
       subcontractorName: user.subcontractorName
     };
     next();

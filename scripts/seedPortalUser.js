@@ -8,7 +8,8 @@
 //   node scripts/seedPortalUser.js reset-password <email> <newPassword>
 //
 // Roles: sysadmin | hr | admin_assistant | finance | supervisor
-// (supervisors need a crew — create those in the portal.)
+// (supervisors are created in the portal, where you pick their worker record —
+// they lead the crew that worker rotates with.)
 
 const bcrypt = require('bcrypt');
 const prisma = require('../prismaClient');
@@ -23,7 +24,7 @@ function fail(message) {
 
 async function createUser(email, password, role, name, subcontractorName = 'Subcontractor A') {
   if (!ROLES.includes(role)) fail(`Unknown role "${role}". Use one of: ${ROLES.join(', ')}`);
-  if (role === 'supervisor') fail('Create supervisors in the portal, where you can pick their crew.');
+  if (role === 'supervisor') fail('Create supervisors in the portal (Users), where you pick their worker record.');
   const normalised = email.trim().toLowerCase();
 
   const existing = await prisma.portalUser.findUnique({ where: { email: normalised } });
@@ -42,6 +43,7 @@ async function createUser(email, password, role, name, subcontractorName = 'Subc
 
 async function setRole(email, role) {
   if (!ROLES.includes(role)) fail(`Unknown role "${role}". Use one of: ${ROLES.join(', ')}`);
+  if (role === 'supervisor') fail('Make supervisors in the portal (Users), where you pick their worker record.');
   const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) fail(`No portal user found with email "${email}".`);
   await prisma.portalUser.update({ where: { id: user.id }, data: { role, crewId: role === 'supervisor' ? user.crewId : null } });

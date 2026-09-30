@@ -194,6 +194,41 @@ const ROT = rotation('DDNNOO', d(1));
 }
 
 // --- rotationShiftsFor ---
+// --- A lone unscheduled badge is placed by the worker's own pattern ---
+{
+  const none = () => ({ shifts: [], source: 'schedule' });
+  const runLean = (punches, lean) => classifyWorker({ punches, shiftsByName, fromDate: d(1), toDate: d(2), expectedFor: none, now: LATER, leanFor: lean ? () => lean : null });
+
+  // C0732026's case: one badge at 14:03, no schedule.
+  const clock = runLean([punch(d(1), '14:03')], null);
+  check('Lone 14:03 badge, no pattern: clock-time guess (Night)', find(clock, d(1), 'Night') && !find(clock, d(1), 'Day'));
+  const dayPattern = runLean([punch(d(1), '14:03')], 'Day');
+  const r = find(dayPattern, d(1), 'Day');
+  check('Lone 14:03 badge, Day pattern: a Day shift that date', r && !find(dayPattern, d(1), 'Night') && r.source === 'unscheduled');
+  check('  after mid-shift, so read as the Day check-out (no check-in)', r && r.checkIn === null && eatTime(r.checkOut) === '14:03:00');
+
+  const evening = runLean([punch(d(1), '17:10')], 'Day');
+  check('Lone 17:10 badge, Day pattern: Day check-out, not a Night check-in', find(evening, d(1), 'Day')?.status === 'no-checkin' && !find(evening, d(1), 'Night'));
+  const morning = runLean([punch(d(2), '07:40')], 'Night');
+  check('Lone 07:40 badge, Night pattern: the previous evening’s Night check-out', find(morning, d(1), 'Night')?.status === 'no-checkin' && !find(morning, d(2), 'Day'));
+  const lunch = runLean([punch(d(1), '12:30')], 'Night');
+  check('Lone 12:30 badge, Night pattern: outside any Night window, stays Day', find(lunch, d(1), 'Day') && !find(lunch, d(1), 'Night'));
+
+  const full = runLean([punch(d(1), '16:31'), punch(d(2), '08:23')], 'Day');
+  check('A complete Night shift stays Night even for a Day-pattern worker (a real cover)', find(full, d(1), 'Night')?.status === 'on-time' && !find(full, d(1), 'Day'));
+}
+
+// --- Pattern: majority of complete shifts in the 28 days before the date ---
+{
+  const { leanFromHistory } = require('../sync/computeDailySummaries');
+  const hist = (list) => list.map(([date, shiftName]) => ({ date, shiftName }));
+  check('Pattern: 4 Day shifts → Day', leanFromHistory(hist([[d(1), 'Day'], [d(2), 'Day'], [d(3), 'Day'], [d(4), 'Day']]), d(9)) === 'Day');
+  check('Pattern: one shift is not enough', leanFromHistory(hist([[d(1), 'Day']]), d(9)) === null);
+  check('Pattern: an even mix gives no lean', leanFromHistory(hist([[d(1), 'Day'], [d(2), 'Day'], [d(3), 'Night'], [d(4), 'Night']]), d(9)) === null);
+  check('Pattern: only shifts BEFORE the date count', leanFromHistory(hist([[d(9), 'Night'], [d(10), 'Night']]), d(9)) === null);
+  check('Pattern: older than 28 days is ignored', leanFromHistory(hist([[d(1), 'Day'], [d(2), 'Day']]), addDaysStr(d(2), 29)) === null);
+}
+
 check('Rotation lookup: anchor day is D', rotationShiftsFor('DDNNOO', '2026-09-21', '2026-09-21')[0] === 'Day');
 check('Rotation lookup: day 3 is N', rotationShiftsFor('DDNNOO', '2026-09-21', '2026-09-23')[0] === 'Night');
 check('Rotation lookup: day 5 is off', rotationShiftsFor('DDNNOO', '2026-09-21', '2026-09-25').length === 0);

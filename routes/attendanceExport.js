@@ -3,6 +3,8 @@ const { Parser } = require('json2csv');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { summaryVisibility } = require('../middleware/requireRole');
+const { statusTags, TAG_LABEL } = require('../reports/reportCatalog');
+const { downloadStamp } = require('../services/audit');
 
 const router = express.Router();
 
@@ -46,7 +48,7 @@ router.get('/attendance/export', authenticate, async (req, res) => {
 
     const parser = new Parser({
       fields: ['date', 'shift', 'employee_id', 'worker_name', 'check_in', 'check_out', 'hours_worked', 'regular_hours',
-        'status', 'late_in', 'early_check_out', 'source', 'approval', 'approved_at', 'supervisor_comment']
+        'status', 'source', 'approval', 'approved_at', 'supervisor_comment']
     });
     const csv = parser.parse(rows.map((r) => ({
       date: r.date.toISOString().slice(0, 10),
@@ -57,18 +59,27 @@ router.get('/attendance/export', authenticate, async (req, res) => {
       check_out: eatTime(r.checkOut) + (r.checkOutImplied ? ' (implied)' : ''),
       hours_worked: r.hoursWorked ?? '',
       regular_hours: r.regularHours ?? '',
-      status: r.status,
-      late_in: r.lateIn ? 'yes' : '',
-      early_check_out: r.earlyCheckOut ? 'yes' : '',
+      // Late in / Early out only; blank otherwise.
+      status: statusTags(r).split(',').filter(Boolean).map((k) => TAG_LABEL[k]).join(' · '),
       source: r.source,
       approval: approvalState(r),
       approved_at: r.approvedAt ? eatTime(r.approvedAt) : '',
       supervisor_comment: r.supervisorComment || ''
     })));
 
+    // Who downloaded it and when, after the data so the header row stays the
+    // first line for anything importing the file.
+    const stamp = downloadStamp(req, res);
+    const trailer = [
+      '',
+      `"Downloaded by","${stamp.by.replace(/"/g, '""')}"`,
+      `"Downloaded at","${stamp.atText}"`,
+      `"Download reference","${stamp.ref}"`
+    ].join('\n');
+
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="casuals-attendance_${from}_to_${to}.csv"`);
-    res.send(csv);
+    res.send(`${csv}\n${trailer}\n`);
   } catch (err) {
     console.error('Attendance export failed:', err);
     res.status(500).json({ error: 'Could not generate export.' });

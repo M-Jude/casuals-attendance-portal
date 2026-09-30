@@ -1,11 +1,35 @@
 const { Prisma } = require('@prisma/client');
 const prisma = require('../prismaClient');
 const { classifyWorker, addDaysStr, eatToUtcMs } = require('./shiftEngine');
-const { buildResolver } = require('./scheduleResolver');
+const { buildResolver, startAtFirstPunch } = require('./scheduleResolver');
 const { planReconcile, sameAttendance, crewUnitKey, hrUnitKey, unitDueAt } = require('./approvalLogic');
 
 function dateOnly(dateStr) {
   return new Date(`${dateStr}T00:00:00.000Z`);
+}
+
+// How far back a worker's own pattern is read, and how clear it must be:
+// at least PATTERN_MIN complete shifts, at least PATTERN_SHARE of one type.
+const PATTERN_DAYS = 28;
+const PATTERN_MIN = 2;
+const PATTERN_SHARE = 2 / 3;
+
+// 'Day' | 'Night' | null — the shift most of the worker's complete shifts in
+// the PATTERN_DAYS before dateStr were.
+function leanFromHistory(completeRows, dateStr) {
+  const from = addDaysStr(dateStr, -PATTERN_DAYS);
+  let day = 0;
+  let night = 0;
+  for (const r of completeRows) {
+    if (r.date < from || r.date >= dateStr) continue;
+    if (r.shiftName === 'Night') night++;
+    else day++;
+  }
+  const total = day + night;
+  if (total < PATTERN_MIN) return null;
+  if (day / total >= PATTERN_SHARE) return 'Day';
+  if (night / total >= PATTERN_SHARE) return 'Night';
+  return null;
 }
 
 // Which approval batch a row belongs to:
@@ -65,14 +89,16 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
   const ids = workers.map((w) => w.id);
   if (ids.length === 0) return { computed: 0 };
 
-  // Punches from the evening before the range (a Night starting then) to
-  // midday after it (the last Night's check-out).
-  const [punches, schedules, rotations, exceptions, crews, existing, profiles] = await Promise.all([
+  // Punches from PATTERN_DAYS before the range (to read each worker's recent
+  // pattern — see leanFor below) to midday after it (the last Night's
+  // check-out).
+  const patternFrom = addDaysStr(fromDateStr, -PATTERN_DAYS);
+  const [punches, schedules, rotations, exceptions, crews, existing, profiles, firstPunches] = await Promise.all([
     prisma.attendanceLog.findMany({
       where: {
         casualWorkerId: { in: ids },
         timestamp: {
-          gte: new Date(eatToUtcMs(addDaysStr(fromDateStr, -1), '00:00')),
+          gte: new Date(eatToUtcMs(addDaysStr(patternFrom, -1), '00:00')),
           lte: new Date(eatToUtcMs(addDaysStr(toDateStr, 2), '12:00'))
         }
       },
@@ -82,14 +108,17 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     prisma.workerSchedule.findMany({ where: { casualWorkerId: { in: ids } } }),
     prisma.crewRotation.findMany(),
     prisma.shiftException.findMany({
-      where: { casualWorkerId: { in: ids }, date: { gte: dateOnly(addDaysStr(fromDateStr, -1)), lte: dateOnly(addDaysStr(toDateStr, 1)) } }
+      where: { casualWorkerId: { in: ids }, date: { gte: dateOnly(addDaysStr(patternFrom, -1)), lte: dateOnly(addDaysStr(toDateStr, 1)) } }
     }),
     prisma.crew.findMany(),
     prisma.dailyAttendanceSummary.findMany({
       where: { casualWorkerId: { in: ids }, date: { gte: dateOnly(fromDateStr), lte: dateOnly(toDateStr) } }
     }),
-    prisma.workerProfile.findMany({ where: { casualWorkerId: { in: ids } } })
+    prisma.workerProfile.findMany({ where: { casualWorkerId: { in: ids } } }),
+    // Each worker's first ever punch — no shift before it can be a no-show.
+    prisma.attendanceLog.groupBy({ by: ['casualWorkerId'], where: { casualWorkerId: { in: ids } }, _min: { timestamp: true } })
   ]);
+  const firstPunchMs = new Map(firstPunches.map((f) => [f.casualWorkerId, f._min.timestamp.getTime()]));
 
   const resolver = buildResolver({ schedules, rotations, exceptions, workers, profiles });
   const punchesByWorker = new Map(ids.map((id) => [id, []]));
@@ -100,13 +129,26 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
 
   for (const worker of workers) {
     const tenantCrewIds = crews.filter((c) => c.subcontractorName === worker.subcontractorName).map((c) => c.id);
+    const expectedFor = startAtFirstPunch(resolver.expectedFor(worker.id), firstPunchMs.get(worker.id) ?? null, shiftsByName);
+    const workerPunches = punchesByWorker.get(worker.id);
+
+    // First pass over the pattern window: the worker's complete shifts (both
+    // badges) say which shift they usually work. A lone unscheduled badge on
+    // a date is then placed by the pattern of the PATTERN_DAYS before it —
+    // complete shifts don't depend on this, so the result doesn't depend on
+    // where the recompute starts.
+    const history = classifyWorker({ punches: workerPunches, shiftsByName, fromDate: patternFrom, toDate: toDateStr, expectedFor, now })
+      .filter((r) => r.checkIn !== null && r.checkOut !== null);
+    const leanFor = (dateStr) => leanFromHistory(history, dateStr);
+
     const rows = classifyWorker({
-      punches: punchesByWorker.get(worker.id),
+      punches: workerPunches,
       shiftsByName,
       fromDate: fromDateStr,
       toDate: toDateStr,
-      expectedFor: resolver.expectedFor(worker.id),
-      now
+      expectedFor,
+      now,
+      leanFor
     });
 
     for (const r of rows) {
@@ -171,6 +213,13 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
         data: { changedAfterApproval: false, pendingValues: Prisma.JsonNull }
       });
     }
+    // Suggested -> confirmed schedule on an approved row: just the label.
+    for (const source of new Set(plan.relabels.map((r) => r.source))) {
+      await tx.dailyAttendanceSummary.updateMany({
+        where: { id: { in: plan.relabels.filter((r) => r.source === source).map((r) => r.id) } },
+        data: { source }
+      });
+    }
 
     // An approved batch that gained a new row or had a row change goes back
     // to its approver; a reopened batch whose changes have all reverted is
@@ -224,4 +273,4 @@ async function getPunchDetailForSummary(summary) {
   }));
 }
 
-module.exports = { computeSummaries, getPunchDetailForSummary, approvalCrewFor };
+module.exports = { computeSummaries, getPunchDetailForSummary, approvalCrewFor, leanFromHistory };
