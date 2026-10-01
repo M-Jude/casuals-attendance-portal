@@ -3,14 +3,14 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { buildResolver, dateStrOf, scheduleKey, parseExceptionShifts } = require('../sync/scheduleResolver');
-const { addDaysStr } = require('../sync/shiftEngine');
+const { addDaysStr, eatDateStr } = require('../sync/shiftEngine');
 const { recomputeWorkers, todayEat } = require('../services/recompute');
+const { setWorkerSchedule } = require('../services/workerSchedule');
 
 const router = express.Router();
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PATTERN_RE = /^[DNO]{2,31}$/;
-const SCHEDULE_TYPES = ['crew', 'fixed-day', 'fixed-night', 'unassigned'];
 const SCHEDULE_EDITORS = ['sysadmin', 'hr', 'admin_assistant'];
 
 function dateOnly(dateStr) {
@@ -34,7 +34,7 @@ function suggestionLabel(profile, crewsById) {
 async function loadTenant(subcontractorName) {
   const [crews, workers] = await Promise.all([
     prisma.crew.findMany({ where: { subcontractorName }, include: { rotations: true, supervisors: { where: { active: true }, select: { id: true, name: true } } }, orderBy: { name: 'asc' } }),
-    prisma.casualWorker.findMany({ where: { subcontractorName }, include: { schedules: true, profile: true }, orderBy: { name: 'asc' } })
+    prisma.casualWorker.findMany({ where: { subcontractorName }, include: { schedules: true, profile: true, account: { select: { id: true, role: true, active: true } } }, orderBy: { name: 'asc' } })
   ]);
   const resolver = buildResolver({
     schedules: workers.flatMap((w) => w.schedules),
@@ -214,6 +214,9 @@ router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assist
   try {
     const { workers, resolver, crewsById } = await loadTenant(req.user.subcontractorName);
     const today = todayEat();
+    // Each worker's first punch (EAT date) — a first schedule defaults to it.
+    const firsts = await prisma.attendanceLog.groupBy({ by: ['casualWorkerId'], where: { casualWorkerId: { in: workers.map((w) => w.id) } }, _min: { timestamp: true } });
+    const firstPunch = new Map(firsts.map((f) => [f.casualWorkerId, eatDateStr(f._min.timestamp.getTime())]));
     let list = workers.map((w) => {
       const current = resolver.scheduleOn(w.id, today);
       return {
@@ -228,6 +231,9 @@ router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assist
           effectiveFrom: current ? dateStrOf(current.effectiveFrom) : null
         },
         today: resolver.scheduledShiftsOn(w.id, today),
+        account: w.account ? { role: w.account.role, active: w.account.active } : null,
+        firstPunchDate: firstPunch.get(w.id) || null,
+        hasSchedule: w.schedules.length > 0,
         suggestion: w.profile?.suggestedType
           ? {
               label: suggestionLabel(w.profile, crewsById),
@@ -247,33 +253,17 @@ router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assist
   }
 });
 
-async function setWorkerSchedule({ workerId, type, crewId, effectiveFrom, note, userId, subcontractorName }) {
-  if (!SCHEDULE_TYPES.includes(type)) throw Object.assign(new Error('Unknown schedule type.'), { status: 400 });
-  if (!DATE_RE.test(effectiveFrom || '')) throw Object.assign(new Error('Effective-from date is required.'), { status: 400 });
-  const worker = await prisma.casualWorker.findFirst({ where: { id: workerId, subcontractorName } });
-  if (!worker) throw Object.assign(new Error('Worker not found.'), { status: 404 });
-  if (type === 'crew') {
-    const crew = await prisma.crew.findFirst({ where: { id: Number(crewId), subcontractorName } });
-    if (!crew) throw Object.assign(new Error('Choose a crew.'), { status: 400 });
-  }
-  await prisma.workerSchedule.upsert({
-    where: { casualWorkerId_effectiveFrom: { casualWorkerId: workerId, effectiveFrom: dateOnly(effectiveFrom) } },
-    update: { type, crewId: type === 'crew' ? Number(crewId) : null, note, createdById: userId },
-    create: { casualWorkerId: workerId, effectiveFrom: dateOnly(effectiveFrom), type, crewId: type === 'crew' ? Number(crewId) : null, note, createdById: userId }
-  });
-  await recomputeWorkers([workerId], effectiveFrom);
-}
-
 router.post('/workers/:id/schedule', authenticate, requireRole(...SCHEDULE_EDITORS), async (req, res) => {
-  const { type, crewId, effectiveFrom, note } = req.body || {};
+  const { type, crewId, effectiveFrom, note, supervisorAction } = req.body || {};
   try {
     await setWorkerSchedule({
       workerId: parseInt(req.params.id, 10), type, crewId, effectiveFrom, note: note || null,
-      userId: req.user.id, subcontractorName: req.user.subcontractorName
+      userId: req.user.id, subcontractorName: req.user.subcontractorName, supervisorAction
     });
     res.json({ success: true });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
+    // 409 + decision: the worker is a supervisor — the UI asks what happens to their account.
+    if (err.status) return res.status(err.status).json({ error: err.message, decision: err.decision });
     console.error('Failed to set schedule:', err);
     res.status(500).json({ error: 'Could not update the schedule.' });
   }
@@ -335,11 +325,12 @@ router.post('/pattern-review/:workerId/:action', authenticate, requireRole('sysa
       effectiveFrom,
       note: 'Accepted from pattern review',
       userId: req.user.id,
-      subcontractorName: req.user.subcontractorName
+      subcontractorName: req.user.subcontractorName,
+      supervisorAction: req.body?.supervisorAction
     });
     res.json({ success: true });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
+    if (err.status) return res.status(err.status).json({ error: err.message, decision: err.decision });
     console.error('Failed to resolve pattern review:', err);
     res.status(500).json({ error: 'Could not update the worker.' });
   }
@@ -411,9 +402,13 @@ router.delete('/exceptions/:id', authenticate, requireRole(...SCHEDULE_EDITORS, 
   try {
     const exception = await prisma.shiftException.findUnique({ where: { id: parseInt(req.params.id, 10) } });
     if (!exception) return res.status(404).json({ error: 'Exception not found.' });
-    await assertCanEditWorker(req.user, exception.casualWorkerId);
+    const worker = await assertCanEditWorker(req.user, exception.casualWorkerId);
     await prisma.shiftException.delete({ where: { id: exception.id } });
     const date = dateStrOf(exception.date);
+    res.locals.audit = {
+      summary: `Removed the schedule exception for ${worker.name} (${worker.biostarUserId}) on ${date}`,
+      details: { removed: { date, shifts: exception.shifts || 'off', note: exception.note } }
+    };
     await recomputeWorkers([exception.casualWorkerId], addDaysStr(date, -1), addDaysStr(date, 1));
     res.json({ success: true });
   } catch (err) {

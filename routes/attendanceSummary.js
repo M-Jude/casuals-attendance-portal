@@ -6,7 +6,7 @@ const { getPunchDetailForSummary } = require('../sync/computeDailySummaries');
 
 const router = express.Router();
 
-const MAX_PAGE_SIZE = 500;
+const MAX_PAGE_SIZE = 5000;
 const DEFAULT_PAGE_SIZE = 200;
 
 const SUMMARY_INCLUDE = {
@@ -57,8 +57,10 @@ router.get('/attendance/punches', authenticate, async (req, res) => {
   try {
     // 404 rather than 403 for a row outside the user's visibility — don't
     // confirm it exists.
+    // Visible rows, plus the account holder's own shifts (My attendance).
+    const own = req.user.casualWorkerId ? [{ id: summaryId, casualWorkerId: req.user.casualWorkerId }] : [];
     const summary = await prisma.dailyAttendanceSummary.findFirst({
-      where: { id: summaryId, ...summaryVisibility(req.user) }
+      where: { OR: [{ id: summaryId, ...summaryVisibility(req.user) }, ...own] }
     });
     if (!summary) return res.status(404).json({ error: 'Record not found.' });
 

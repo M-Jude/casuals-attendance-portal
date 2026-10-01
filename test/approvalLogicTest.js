@@ -91,6 +91,19 @@ function stored(overrides = {}) {
   check('Supervisors cannot approve the HR month', !canApprove({ role: 'supervisor', crewId: 3 }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
 }
 
+// --- Confirming a suggested schedule is a label change, not a new attendance ---
+{
+  const approved = stored({ source: 'suggested', approvedAt: new Date('2026-09-22T10:00:00Z') });
+  const p = planReconcile([approved], [row({ source: 'schedule' })]);
+  check('Suggested → confirmed schedule on an approved row: not flagged for re-approval', p.flags.length === 0);
+  check('  its label is brought up to date', p.relabels.length === 1 && p.relabels[0].source === 'schedule');
+  const p2 = planReconcile([approved], [row({ source: 'unscheduled' })]);
+  check('Other source changes on an approved row still need re-approval', p2.flags.length === 1);
+  const held = stored({ source: 'suggested', approvedAt: new Date(), changedAfterApproval: true });
+  const p3 = planReconcile([held], [row({ source: 'schedule' })]);
+  check('A held row now matching its approved values is cleared, and its batch re-checked', p3.clears.length === 1 && p3.reopenKeys.has(held.approvalKey));
+}
+
 console.log('\nChecks:');
 let allPassed = true;
 for (const [label, passed] of checks) {

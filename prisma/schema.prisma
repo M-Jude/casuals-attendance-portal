@@ -15,22 +15,23 @@ model CasualWorker {
   startDate         DateTime
   status            String   @default("active") // active | inactive
 
-  attendanceLogs    AttendanceLog[]
-  schedules         WorkerSchedule[]
-  shiftExceptions   ShiftException[]
-  dailySummaries    DailyAttendanceSummary[]
-  profile           WorkerProfile?
+  attendanceLogs  AttendanceLog[]
+  schedules       WorkerSchedule[]
+  shiftExceptions ShiftException[]
+  dailySummaries  DailyAttendanceSummary[]
+  profile         WorkerProfile?
+  account         PortalUser? // portal account of this worker, if they have one (e.g. a supervisor)
 }
 
 model AttendanceLog {
-  id             Int      @id @default(autoincrement())
+  id             Int          @id @default(autoincrement())
   casualWorkerId Int
   worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
-  biostarEventId String   @unique // prevents duplicate rows on repeated sync runs
-  eventType      String   // check-in | check-out | other
+  biostarEventId String       @unique // prevents duplicate rows on repeated sync runs
+  eventType      String // check-in | check-out | other
   timestamp      DateTime
-  rawPayload     Json?    // raw BioStar event, kept for debugging/audit
-  syncedAt       DateTime @default(now())
+  rawPayload     Json? // raw BioStar event, kept for debugging/audit
+  syncedAt       DateTime     @default(now())
 
   @@index([casualWorkerId, timestamp])
 }
@@ -44,19 +45,23 @@ model AttendanceLog {
 //   finance         — sees APPROVED records only
 //   supervisor      — leads one crew (crewId) and approves its shifts
 model PortalUser {
-  id                Int      @id @default(autoincrement())
-  email             String   @unique
+  id                Int           @id @default(autoincrement())
+  email             String        @unique
   passwordHash      String
-  name              String   @default("")
-  role              String   @default("hr")
+  name              String        @default("")
+  role              String        @default("hr")
   crewId            Int?
-  crew              Crew?    @relation(fields: [crewId], references: [id])
-  active            Boolean  @default(true)
-  subcontractorName String   @default("Subcontractor A")
+  crew              Crew?         @relation(fields: [crewId], references: [id])
+  // The worker record of the account holder. Required for supervisors (their
+  // crew is always this worker's crew); optional for other roles.
+  casualWorkerId    Int?          @unique
+  worker            CasualWorker? @relation(fields: [casualWorkerId], references: [id])
+  active            Boolean       @default(true)
+  subcontractorName String        @default("Subcontractor A")
   createdById       Int?
-  createdAt         DateTime @default(now())
+  createdAt         DateTime      @default(now())
 
-  notifications     Notification[]
+  notifications Notification[]
 }
 
 // Fixed shift definitions. Only two rows: Day and Night. Night is
@@ -67,16 +72,16 @@ model PortalUser {
 model Shift {
   id                   Int      @id @default(autoincrement())
   name                 String   @unique // "Day" | "Night"
-  startTime            String   // "HH:mm"
-  endTime              String   // "HH:mm"
+  startTime            String // "HH:mm"
+  endTime              String // "HH:mm"
   graceMinutes         Int      @default(30) // check-in more than this after start is "late"
-  earlyOutGraceMinutes Int      @default(0)  // check-out more than this before end is an early check-out
+  earlyOutGraceMinutes Int      @default(0) // check-out more than this before end is an early check-out
   earliestCheckIn      String   @default("05:00")
   latestCheckOut       String   @default("05:00")
   updatedById          Int?
   updatedAt            DateTime @default(now()) @updatedAt
 
-  summaries            DailyAttendanceSummary[]
+  summaries DailyAttendanceSummary[]
 }
 
 // A team of casuals that rotates through a repeating pattern (e.g. Day,
@@ -87,10 +92,10 @@ model Crew {
   subcontractorName String   @default("Subcontractor A")
   createdAt         DateTime @default(now())
 
-  rotations         CrewRotation[]
-  supervisors       PortalUser[]
-  schedules         WorkerSchedule[]
-  proposals         CrewCycleProposal[]
+  rotations   CrewRotation[]
+  supervisors PortalUser[]
+  schedules   WorkerSchedule[]
+  proposals   CrewCycleProposal[]
 
   @@unique([subcontractorName, name])
 }
@@ -120,16 +125,16 @@ model CrewRotation {
 //   unassigned  — no schedule; punches are classified by clock time and
 //                 flagged "unscheduled"
 model WorkerSchedule {
-  id             Int      @id @default(autoincrement())
+  id             Int          @id @default(autoincrement())
   casualWorkerId Int
   worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
   effectiveFrom  DateTime // date-only
   type           String
   crewId         Int?
-  crew           Crew?    @relation(fields: [crewId], references: [id])
+  crew           Crew?        @relation(fields: [crewId], references: [id])
   note           String?
   createdById    Int?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
   @@unique([casualWorkerId, effectiveFrom])
 }
@@ -138,14 +143,14 @@ model WorkerSchedule {
 // cover, double shift or day off. `shifts` is the full set worked that date
 // — "Day", "Night", "Day,Night" (double shift) or "" (off).
 model ShiftException {
-  id             Int      @id @default(autoincrement())
+  id             Int          @id @default(autoincrement())
   casualWorkerId Int
   worker         CasualWorker @relation(fields: [casualWorkerId], references: [id])
   date           DateTime // date-only; the shift's start date
   shifts         String
   note           String?
   createdById    Int?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
   @@unique([casualWorkerId, date])
 }
@@ -159,32 +164,32 @@ model ShiftException {
 // sets changedAfterApproval and parks the new values in pendingValues until
 // someone re-approves.
 model DailyAttendanceSummary {
-  id                   Int      @id @default(autoincrement())
+  id                   Int          @id @default(autoincrement())
   casualWorkerId       Int
   worker               CasualWorker @relation(fields: [casualWorkerId], references: [id])
   date                 DateTime // the shift's start date
   shiftId              Int
-  shift                Shift    @relation(fields: [shiftId], references: [id])
-  source               String   @default("schedule") // schedule | exception | unscheduled
+  shift                Shift        @relation(fields: [shiftId], references: [id])
+  source               String       @default("schedule") // schedule | exception | suggested (profiled pattern, not yet confirmed) | unscheduled
   checkIn              DateTime?
   checkOut             DateTime?
-  checkInImplied       Boolean  @default(false) // continuous double shift with no badge at the changeover
-  checkOutImplied      Boolean  @default(false)
-  hoursWorked          Float?   // check-in to check-out; no meal deduction
-  regularHours         Float?   // the part of hoursWorked inside the scheduled shift
-  status               String   // on-time | early | late | no-checkout | no-checkin | in-progress | no-show
-  lateIn               Boolean  @default(false)
-  earlyCheckOut        Boolean  @default(false)
-  hasMultiplePunches   Boolean  @default(false)
-  punchIds             Json?    // AttendanceLog ids this shift captured
+  checkInImplied       Boolean      @default(false) // continuous double shift with no badge at the changeover
+  checkOutImplied      Boolean      @default(false)
+  hoursWorked          Float? // check-in to check-out; no meal deduction
+  regularHours         Float? // the part of hoursWorked inside the scheduled shift
+  status               String // on-time | early | late | no-checkout | no-checkin | in-progress | no-show
+  lateIn               Boolean      @default(false)
+  earlyCheckOut        Boolean      @default(false)
+  hasMultiplePunches   Boolean      @default(false)
+  punchIds             Json? // AttendanceLog ids this shift captured
   approvalKey          String
-  approvalCrewId       Int?     // crew whose supervisor approves; null = HR monthly
-  supervisorComment    String?  @db.Text
+  approvalCrewId       Int? // crew whose supervisor approves; null = HR monthly
+  supervisorComment    String?      @db.Text
   approvedAt           DateTime?
   approvedById         Int?
-  changedAfterApproval Boolean  @default(false)
+  changedAfterApproval Boolean      @default(false)
   pendingValues        Json?
-  computedAt           DateTime @default(now())
+  computedAt           DateTime     @default(now())
 
   @@unique([casualWorkerId, date, shiftId])
   @@index([approvalKey])
@@ -198,38 +203,38 @@ model DailyAttendanceSummary {
 //   hr-month   — permanent-Day/Night (and other non-crew) workers' rows for
 //                a month; approved by HR after the month ends
 model ApprovalUnit {
-  id                Int      @id @default(autoincrement())
-  key               String   @unique
+  id                Int       @id @default(autoincrement())
+  key               String    @unique
   kind              String
   subcontractorName String
   date              DateTime?
   shiftId           Int?
   crewId            Int?
-  month             String?  // "YYYY-MM" for hr-month
+  month             String? // "YYYY-MM" for hr-month
   dueAt             DateTime
-  status            String   @default("pending") // pending | approved | reopened
+  status            String    @default("pending") // pending | approved | reopened
   reopenedAt        DateTime?
   dueNotifiedAt     DateTime?
   escalatedAt       DateTime?
   approvedAt        DateTime?
   approvedById      Int?
-  comment           String?  @db.Text
-  createdAt         DateTime @default(now())
+  comment           String?   @db.Text
+  createdAt         DateTime  @default(now())
 
   @@index([status, dueAt])
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
+  id        Int        @id @default(autoincrement())
   userId    Int
   user      PortalUser @relation(fields: [userId], references: [id])
   type      String
   title     String
-  body      String   @db.Text
+  body      String     @db.Text
   link      String?
   readAt    DateTime?
   emailedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime   @default(now())
 
   @@index([userId, readAt])
 }
@@ -237,32 +242,64 @@ model Notification {
 // Latest punch-pattern profile per worker (sync/profilingJob.js): the
 // schedule their punches fit best, for HR's pattern review.
 model WorkerProfile {
-  casualWorkerId   Int      @id
+  casualWorkerId   Int          @id
   worker           CasualWorker @relation(fields: [casualWorkerId], references: [id])
-  suggestedType    String?  // crew | rotation | fixed-day | fixed-night; null = no clear pattern
+  suggestedType    String? // crew | rotation | fixed-day | fixed-night; null = no clear pattern
   suggestedCrewId  Int?
   suggestedPattern String?
   suggestedAnchor  DateTime?
-  confidence       Float    @default(0)
-  completeShifts   Int      @default(0)
-  suggestionKey    String?  // stable signature of the suggestion
-  dismissedKey     String?  // HR dismissed this exact suggestion
-  notifiedKey      String?  // HR was already told about this exact suggestion
+  confidence       Float        @default(0)
+  completeShifts   Int          @default(0)
+  suggestionKey    String? // stable signature of the suggestion
+  dismissedKey     String? // HR dismissed this exact suggestion
+  notifiedKey      String? // HR was already told about this exact suggestion
   details          Json?
-  computedAt       DateTime @default(now())
+  computedAt       DateTime     @default(now())
 }
 
 // A detected change in a crew's cycle, waiting for the system admin.
 model CrewCycleProposal {
-  id            Int      @id @default(autoincrement())
+  id            Int       @id @default(autoincrement())
   crewId        Int
-  crew          Crew     @relation(fields: [crewId], references: [id])
+  crew          Crew      @relation(fields: [crewId], references: [id])
   pattern       String
   anchorDate    DateTime
   effectiveFrom DateTime
-  status        String   @default("open") // open | applied | dismissed
+  status        String    @default("open") // open | applied | dismissed
   evidence      Json?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
   resolvedById  Int?
   resolvedAt    DateTime?
+}
+
+// The audit trail (services/audit.js, middleware/auditTrail.js): one row per
+// action — sign-ins, every change, every download and report preview — with
+// who did it, when, from which IP address and device. The user's details are
+// copied in rather than linked, so an entry reads the same after the account
+// is renamed or removed. Rows are insert-only; nothing updates or deletes them.
+model AuditLog {
+  id                Int      @id @default(autoincrement())
+  createdAt         DateTime @default(now())
+  userId            Int?
+  userEmail         String?
+  userName          String?
+  userRole          String?
+  subcontractorName String?
+  category          String // auth | account | approval | attendance | schedule | settings | download | report | notification | other
+  action            String // e.g. auth.login, approval.approve, download.report-pdf
+  summary           String   @db.Text
+  entityType        String?
+  entityId          String?
+  success           Boolean  @default(true)
+  statusCode        Int?
+  method            String   @db.VarChar(10)
+  path              String   @db.VarChar(512)
+  ipAddress         String?  @db.VarChar(64)
+  userAgent         String?  @db.Text
+  device            String?
+  details           Json?
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([category, createdAt])
 }

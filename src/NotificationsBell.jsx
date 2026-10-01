@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDateTime } from './api';
+import Icon from './icons';
 
 const POLL_MS = 60 * 1000;
 
@@ -50,14 +51,14 @@ export default function NotificationsBell({ api, onNavigate }) {
 
   return (
     <div className="bell" ref={ref}>
-      <button className="bell__button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label={`Notifications, ${unread} unread`}>
-        Notifications
-        {unread > 0 && <span className="bell__badge">{unread}</span>}
+      <button className="icon-btn bell__button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label={`Notifications, ${unread} unread`} title="Notifications">
+        <Icon name="bell" size={19} />
+        {unread > 0 && <span className="bell__badge">{unread > 99 ? '99+' : unread}</span>}
       </button>
       {open && (
         <div className="bell__panel" role="dialog" aria-label="Notifications">
           <div className="bell__head">
-            <span>{unread} unread</span>
+            <span>Notifications{unread > 0 ? ` · ${unread} unread` : ''}</span>
             {unread > 0 && <button className="btn btn--link small" onClick={markAll}>Mark all read</button>}
           </div>
           {items.length === 0 ? (

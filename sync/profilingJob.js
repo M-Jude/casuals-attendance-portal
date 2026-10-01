@@ -10,7 +10,7 @@
 
 const prisma = require('../prismaClient');
 const { addDaysStr, eatDateStr, eatToUtcMs } = require('./shiftEngine');
-const { profileWorker, detectCycleChange, candidateSchedules, sameRotation, normaliseAnchor, scheduleLabel, CANDIDATE_PATTERNS } = require('./patternProfiler');
+const { profileWithCrews, detectCycleChange, candidateSchedules, sameRotation, normaliseAnchor, scheduleLabel, CANDIDATE_PATTERNS } = require('./patternProfiler');
 const { buildResolver, dateStrOf, scheduleKey } = require('./scheduleResolver');
 const { notifyUsers, usersWithRoles } = require('../services/notify');
 
@@ -65,23 +65,12 @@ async function profileTenant(subcontractorName, shiftsByName, { fromDate, toDate
   const newlyNeedingReview = [];
   let profiled = 0;
 
-  // The realistic choices for a worker are the existing crews plus
-  // permanent Day/Night — comparing only those (crew cycles are two days
-  // apart) is far more decisive than against every possible phase. The
-  // all-phases comparison is only used when that's inconclusive, to spot a
-  // rotation no crew is on yet.
-  const crewCandidates = crewRotations.length
-    ? [{ type: 'fixed-day' }, { type: 'fixed-night' }, ...crewRotations.map((c) => ({ type: 'rotation', ...c.rotation }))]
-    : null;
+  const crewCandidates = [{ type: 'fixed-day' }, { type: 'fixed-night' }, ...crewRotations.map((c) => ({ type: 'rotation', ...c.rotation }))];
 
   for (const w of workers) {
-    const punches = punchesByWorker.get(w.id);
-    let profile = crewCandidates ? profileWorker({ punches, shiftsByName, fromDate, toDate, now, candidates: crewCandidates }) : null;
-    if (!profile || !profile.suggestion) {
-      const wide = profileWorker({ punches, shiftsByName, fromDate, toDate, now, candidates });
-      if (!profile || wide.suggestion) profile = wide;
-    }
-    const { results, suggestion } = profile;
+    const { results, suggestion } = profileWithCrews({
+      punches: punchesByWorker.get(w.id), shiftsByName, fromDate, toDate, now, crewCandidates, allCandidates: candidates
+    });
     const s = suggestionFor(suggestion, crewRotations, toDate);
     const data = {
       suggestedType: s ? s.type : null,

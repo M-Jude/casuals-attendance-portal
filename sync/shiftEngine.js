@@ -104,6 +104,20 @@ function clusterPunches(punches) {
 // or working outside their schedule). Morning/midday → Day that date;
 // afternoon/evening → Night that date; small hours → the previous evening's
 // Night.
+// A lone badge from someone with no schedule could belong to either shift
+// (e.g. 14:03, or 17:10 — a Day check-out or a Night check-in). When the
+// worker's own history leans clearly one way, use that shift instead of the
+// clock-time guess — provided the badge falls inside that shift's window.
+// Returns { shift, date } or null.
+function placeInShift(ms, shift) {
+  const date = eatDateStr(ms);
+  for (const d of [date, addDaysStr(date, -1)]) {
+    const g = shiftGeometry(shift, d);
+    if (ms >= g.captureStart && ms < g.captureEnd) return { shift, date: d };
+  }
+  return null;
+}
+
 function inferShiftForUnscheduled(ms, shiftsByName) {
   const m = eatMinuteOfDay(ms);
   const date = eatDateStr(ms);
@@ -202,7 +216,10 @@ function resolveInstance(inst, now) {
 //                  expected shift is already a no-show
 //
 // Returns instances for dates in [fromDate, toDate] only.
-function classifyWorker({ punches, shiftsByName, fromDate, toDate, expectedFor, now = Date.now() }) {
+//   leanFor(dateStr) → 'Day' | 'Night' | null  (optional) — the shift this
+//                  worker's own recent history points to, used to place a
+//                  lone unscheduled badge that could belong to either shift
+function classifyWorker({ punches, shiftsByName, fromDate, toDate, expectedFor, now = Date.now(), leanFor = null }) {
   const sorted = [...punches].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   const clusters = clusterPunches(sorted);
 
@@ -290,23 +307,34 @@ function classifyWorker({ punches, shiftsByName, fromDate, toDate, expectedFor, 
   });
 
   // Unclaimed punches: build instances from their own clock times so they
-  // stay visible (flagged "unscheduled") rather than silently dropped.
+  // stay visible (flagged "unscheduled") rather than silently dropped. A
+  // group of badges settles the shift by itself; a single badge is a guess,
+  // made from the worker's own pattern (leanFor) when they have one.
   const inferred = [];
   for (let i = 0; i < unscheduled.length; ) {
     const c = unscheduled[i];
-    const { shift, date } = inferShiftForUnscheduled(c.first, shiftsByName);
-    const geometry = shiftGeometry(shift, date);
+    let { shift, date } = inferShiftForUnscheduled(c.first, shiftsByName);
+    let geometry = shiftGeometry(shift, date);
+    const group = [c];
+    i++;
+    while (i < unscheduled.length && unscheduled[i].first < geometry.captureEnd) {
+      group.push(unscheduled[i]);
+      i++;
+    }
+    if (group.length === 1 && leanFor) {
+      const lean = leanFor(date);
+      if (lean && lean !== shift.name && shiftsByName[lean]) {
+        const placed = placeInShift(c.first, shiftsByName[lean]);
+        if (placed) ({ shift, date } = placed);
+        geometry = shiftGeometry(shift, date);
+      }
+    }
     let inst = [...expected, ...inferred].find((x) => x.date === date && x.shift.name === shift.name);
     if (!inst) {
       inst = { date, shift, source: 'unscheduled', geometry, captureEnd: geometry.captureEnd, clusters: [] };
       inferred.push(inst);
     }
-    inst.clusters.push(c);
-    i++;
-    while (i < unscheduled.length && unscheduled[i].first < geometry.captureEnd) {
-      inst.clusters.push(unscheduled[i]);
-      i++;
-    }
+    inst.clusters.push(...group);
   }
 
   return [...expected, ...inferred]

@@ -21,10 +21,18 @@ function normaliseStatus(status) {
   return status === 'in-progress' ? 'no-checkout' : status;
 }
 
+// A shift judged against a worker's profiled pattern ("suggested") that HR
+// then confirms as their schedule is the same shift — only the label
+// changes, so it mustn't reopen an approved shift either.
+function normaliseSource(source) {
+  return source === 'suggested' ? 'schedule' : source;
+}
+
 function comparable(field, value) {
   if (value === null || value === undefined) return null;
   if (field === 'checkIn' || field === 'checkOut') return new Date(value).getTime();
   if (field === 'status') return normaliseStatus(value);
+  if (field === 'source') return normaliseSource(value);
   return value;
 }
 
@@ -46,7 +54,9 @@ function rowKey(r) {
 // approval unit reopened.
 function planReconcile(existing, fresh) {
   const existingByKey = new Map(existing.map((r) => [rowKey(r), r]));
-  const plan = { creates: [], updates: [], deletes: [], flags: [], clears: [], reopenKeys: new Set() };
+  // relabels: approved rows whose only difference is suggested -> schedule;
+  // the label is brought up to date without touching the approval.
+  const plan = { creates: [], updates: [], deletes: [], flags: [], clears: [], relabels: [], reopenKeys: new Set() };
 
   for (const f of fresh) {
     const e = existingByKey.get(rowKey(f));
@@ -57,7 +67,11 @@ function planReconcile(existing, fresh) {
     } else if (!e.approvedAt) {
       plan.updates.push({ id: e.id, data: f });
     } else if (sameAttendance(e, f)) {
-      if (e.changedAfterApproval) plan.clears.push(e.id);
+      if (e.changedAfterApproval) {
+        plan.clears.push(e.id);
+        plan.reopenKeys.add(e.approvalKey); // re-checked: may be fully approved again
+      }
+      if (e.source !== f.source) plan.relabels.push({ id: e.id, source: f.source });
     } else {
       plan.flags.push({ id: e.id, pendingValues: f });
       plan.reopenKeys.add(e.approvalKey);

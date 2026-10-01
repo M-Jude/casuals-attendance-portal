@@ -3,12 +3,15 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { summaryVisibility } = require('../middleware/requireRole');
 const { buildAttendanceReport, SORT_LABELS, GROUP_LABELS } = require('../reports/attendancePdf');
+const { addDays } = require('../reports/reportCatalog');
+const { downloadStamp } = require('../services/audit');
 
 const router = express.Router();
 
 // Unlike the dashboard (which pages at 500), a report should cover the whole
 // range — but not unboundedly. ~5000 rows is roughly 200 pages of PDF.
 const MAX_REPORT_ROWS = 5000;
+const MAX_LOADED_ROWS = MAX_REPORT_ROWS * 2; // with the day either side
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 router.get('/attendance/report.pdf', authenticate, async (req, res) => {
@@ -28,10 +31,12 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
   const nameQuery = String(req.query.name || '').trim().slice(0, 60);
 
   try {
-    const [found, shifts] = await Promise.all([
+    // A day either side too, only to recognise double shifts (two shifts
+    // back to back) that cross the range's edge.
+    const [wide, shifts] = await Promise.all([
       prisma.dailyAttendanceSummary.findMany({
         where: {
-          date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+          date: { gte: new Date(`${addDays(from, -1)}T00:00:00.000Z`), lte: new Date(`${addDays(to, 1)}T00:00:00.000Z`) },
           // Same role-based visibility as the dashboard (Finance: approved only).
           ...summaryVisibility(req.user)
         },
@@ -40,12 +45,14 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
           shift: { select: { id: true, name: true } }
         },
         orderBy: [{ date: 'desc' }, { shiftId: 'asc' }],
-        take: MAX_REPORT_ROWS + 1
+        take: MAX_LOADED_ROWS + 1
       }),
       prisma.shift.findMany({ orderBy: { id: 'asc' } })
     ]);
+    const inRange = (r) => { const d = r.date.toISOString().slice(0, 10); return d >= from && d <= to; };
+    const found = wide.filter(inRange);
 
-    if (found.length > MAX_REPORT_ROWS) {
+    if (wide.length > MAX_LOADED_ROWS || found.length > MAX_REPORT_ROWS) {
       return res.status(413).json({ error: `Too many records for one report (over ${MAX_REPORT_ROWS}). Narrow the date range.` });
     }
 
@@ -65,6 +72,7 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
     // still return a clean JSON error instead of a half-written PDF.
     const doc = buildAttendanceReport({
       rows,
+      doubleRows: wide,
       shifts,
       meta: {
         subcontractorName: req.user.subcontractorName,
@@ -73,7 +81,8 @@ router.get('/attendance/report.pdf', authenticate, async (req, res) => {
         generatedAt: new Date(),
         filters: { id: idQuery, name: nameQuery },
         sortBy,
-        groupBy
+        groupBy,
+        download: downloadStamp(req, res)
       }
     });
 

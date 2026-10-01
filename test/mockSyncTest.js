@@ -17,9 +17,9 @@ let nextWorkerId = 1;
 // ---- Fake AttendanceLog table (in-memory) ----
 let fakeAttendanceLogs = [];
 
-// A minimal fake $transaction: just runs the callback against the same fake
-// client (no real isolation needed for this test — we're only checking the
-// resulting rows, not crash-recovery behavior).
+// A minimal fake $transaction: awaits a batch of operations, or runs a
+// callback against the same fake client (no real isolation needed for this
+// test — we're only checking the resulting rows, not crash-recovery behavior).
 const fakeTxClient = {
   casualWorker: {
     findUnique: async ({ where }) =>
@@ -39,9 +39,35 @@ const fakeTxClient = {
   }
 };
 
+// ---- Fake portal accounts + notifications, for the "worker left the group"
+// path: a linked account is disabled and HR / System Admin are notified. ----
+const fakeAccounts = [
+  { id: 1, email: 'hr@test', role: 'hr', active: true, subcontractorName: 'Subcontractor A', casualWorkerId: null },
+  { id: 2, email: 'admin@test', role: 'sysadmin', active: true, subcontractorName: 'Subcontractor A', casualWorkerId: null }
+];
+const fakeNotifications = [];
+const inIds = (where, id) => !where?.id?.in || where.id.in.includes(id);
+
 const fakePrisma = {
-  $transaction: async (fn) => fn(fakeTxClient),
+  $transaction: async (arg) => (Array.isArray(arg) ? Promise.all(arg) : arg(fakeTxClient)),
+  portalUser: {
+    findMany: async ({ where }) => fakeAccounts
+      .filter((a) => (where.active === undefined || a.active === where.active)
+        && (!where.role?.in || where.role.in.includes(a.role))
+        && (!where.casualWorkerId?.in || where.casualWorkerId.in.includes(a.casualWorkerId)))
+      .map((a) => ({ ...a, worker: fakeCasualWorkers.find((w) => w.id === a.casualWorkerId) || null, crew: null })),
+    update: async ({ where, data }) => Object.assign(fakeAccounts.find((a) => a.id === where.id), data)
+  },
+  notification: {
+    create: async ({ data }) => { const n = { id: fakeNotifications.length + 1, ...data }; fakeNotifications.push(n); return n; },
+    update: async () => ({})
+  },
   attendanceLog: {
+    // Which of a day's punches are already stored (to spot new/changed ones).
+    findMany: async ({ where }) => fakeAttendanceLogs
+      .filter((r) => !where?.biostarEventId?.in || where.biostarEventId.in.includes(r.biostarEventId))
+      .map((r) => ({ biostarEventId: r.biostarEventId, timestamp: r.timestamp })),
+    upsert: (args) => fakeTxClient.attendanceLog.upsert(args),
     findFirst: async () => {
       if (fakeAttendanceLogs.length === 0) return null;
       return fakeAttendanceLogs.reduce((latest, row) =>
@@ -50,6 +76,13 @@ const fakePrisma = {
     }
   },
   casualWorker: {
+    findMany: async ({ where } = {}) => fakeCasualWorkers.filter((w) => (!where?.status || w.status === where.status)
+      && (!where?.biostarUserId?.in || where.biostarUserId.in.includes(w.biostarUserId))),
+    updateMany: async ({ where, data }) => {
+      const hit = fakeCasualWorkers.filter((w) => inIds(where, w.id));
+      hit.forEach((w) => Object.assign(w, data));
+      return { count: hit.length };
+    },
     findUnique: async ({ where }) =>
       fakeCasualWorkers.find((w) => w.biostarUserId === where.biostarUserId) || null,
     upsert: async ({ where, update, create }) => {
@@ -202,6 +235,25 @@ async function run() {
   const corrected = fakeAttendanceLogs.find((r) => r.biostarEventId === '5001');
   checks.push(['correction propagation: a modified punch\'s timestamp is updated on re-sync', corrected?.timestamp.toISOString() === correctedTime]);
   checks.push(['correction propagation: no duplicate row was created for the corrected punch', fakeAttendanceLogs.filter((r) => r.biostarEventId === '5001').length === 1]);
+
+  // ---- Worker leaves the BioStar group: their record goes inactive, their
+  // linked supervisor account is disabled, HR and the System Admin are told;
+  // a worker switched off by hand (103) is not switched back on. ----
+  const ivan = fakeCasualWorkers.find((w) => w.biostarUserId === '102');
+  fakeAccounts.push({ id: 3, email: 'ivan@test', name: 'Ivan Okello', role: 'supervisor', active: true, subcontractorName: 'Subcontractor A', casualWorkerId: ivan.id });
+  fakeGroupUsers.splice(fakeGroupUsers.findIndex((u) => u.userId === '102'), 1);
+  await syncAttendance();
+  checks.push(['worker who left the group is marked inactive', ivan.status === 'inactive']);
+  checks.push(['their linked portal account is disabled', fakeAccounts.find((a) => a.id === 3).active === false]);
+  checks.push(['HR and the System Admin are notified', ['hr@test', 'admin@test'].every((e) => fakeNotifications.some((n) => n.userId === fakeAccounts.find((a) => a.email === e).id && n.type === 'account-disabled'))]);
+  checks.push(['a worker switched off by hand stays off while still in the group', fakeCasualWorkers.find((w) => w.biostarUserId === '103').status === 'inactive']);
+  checks.push(['a worker still in the group stays active', fakeCasualWorkers.find((w) => w.biostarUserId === '101').status === 'active']);
+
+  // An empty group list (a BioStar hiccup) must not switch everyone off.
+  const saved = fakeGroupUsers.splice(0);
+  await syncAttendance();
+  checks.push(['an empty group list deactivates nobody', fakeCasualWorkers.find((w) => w.biostarUserId === '101').status === 'active']);
+  fakeGroupUsers.splice(0, fakeGroupUsers.length, ...saved);
 
   console.log('\nChecks:');
   let allPassed = true;

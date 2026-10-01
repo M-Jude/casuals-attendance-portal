@@ -1,8 +1,17 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
 import AttendanceAnalytics from './AttendanceAnalytics';
-import { STATUS_LABEL, STATUS_RANK, statusClassName } from './shiftStatus';
+import { statusTags, isGuessed, GUESSED_TITLE } from './shiftStatus';
+import { doubleShiftRuns, doubleShiftTitle, normalizeDoubles, mergeDoubles, recordsOf } from './doubleShift';
+import StatusTags from './StatusTags';
+import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
+import { usePagination } from './Pagination';
+
+// The dashboard loads every record in the range (in chunks) so the overview
+// covers all of it; the table then pages through them on screen.
+const LOAD_CHUNK = 5000;
+const MAX_LOADED = 50000;
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -28,6 +37,14 @@ function formatDate(dateStr) {
 }
 
 function approvalState(row) {
+  // A merged Day + Night line: each shift is approved by its own supervisor.
+  if (row.parts) {
+    const [a, b] = row.parts.map(approvalState);
+    if (a.key === b.key) return a;
+    const title = `Day: ${a.title}. Night: ${b.title}. Each shift is approved by its own supervisor.`;
+    if (a.key === 'changed' || b.key === 'changed') return { key: 'changed', label: 'Changed', title };
+    return { key: 'pending', label: `${a.key === 'approved' ? 'Day' : 'Night'} approved`, title };
+  }
   if (row.changedAfterApproval) {
     return { key: 'changed', label: 'Changed', title: 'Changed after approval — the approved values stand until re-approved' };
   }
@@ -35,15 +52,28 @@ function approvalState(row) {
   return { key: 'pending', label: 'Waiting', title: 'Not yet approved' };
 }
 
-const SORT_OPTIONS = [
-  { value: 'date-desc', label: 'Date (newest first)' },
-  { value: 'date-asc', label: 'Date (oldest first)' },
-  { value: 'name-asc', label: 'Name (A–Z)' },
-  { value: 'name-desc', label: 'Name (Z–A)' },
-  { value: 'id-asc', label: 'Employee ID (A–Z)' },
-  { value: 'id-desc', label: 'Employee ID (Z–A)' },
-  { value: 'status', label: 'Status (issues first)' }
-];
+// Sort fields, shared by the "Order by" dropdown and the clickable column
+// headings. A sort is "<field>-<asc|desc>". Mirrored by sortRows() in
+// reports/attendancePdf.js so the PDF comes out in the same order.
+const STATUS_ORDER_KEY = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 }; // Late in / Early out first
+const SORT_FIELDS = {
+  date: { get: (r) => r.date, label: ['Date (oldest first)', 'Date (newest first)'], first: 'desc' },
+  name: { get: (r) => r.worker.name, label: ['Name (A–Z)', 'Name (Z–A)'] },
+  id: { get: (r) => r.worker.biostarUserId, label: ['Employee ID (A–Z)', 'Employee ID (Z–A)'] },
+  shift: { get: (r) => r.shift.name, label: ['Shift (Day first)', 'Shift (Night first)'] },
+  in: { get: (r) => r.checkIn, label: ['Clock in (earliest first)', 'Clock in (latest first)'] },
+  out: { get: (r) => r.checkOut, label: ['Clock out (earliest first)', 'Clock out (latest first)'] },
+  hours: { get: (r) => r.hoursWorked, label: ['Hours (fewest first)', 'Hours (most first)'], first: 'desc' },
+  status: { get: (r) => STATUS_ORDER_KEY[statusTags(r).join(',')], label: ['Status (Late in / Early out first)', 'Status (Early out first)'] },
+  approval: { get: (r) => approvalState(r).label, label: ['Approval (A–Z)', 'Approval (Z–A)'] }
+};
+// What the dropdown always offers; any other sort chosen from a heading is
+// added to it while active.
+const SORT_OPTIONS = ['date-desc', 'date-asc', 'name-asc', 'name-desc', 'id-asc', 'id-desc', 'status-asc'];
+function sortLabel(value) {
+  const [field, dir] = value.split('-');
+  return SORT_FIELDS[field]?.label[dir === 'desc' ? 1 : 0] || value;
+}
 
 const GROUP_OPTIONS = [
   { value: 'date', label: 'By date' },
@@ -52,33 +82,9 @@ const GROUP_OPTIONS = [
 ];
 
 function sortRows(rows, sortBy) {
-  const sorted = [...rows];
-  switch (sortBy) {
-    case 'date-asc':
-      sorted.sort((a, b) => a.date.localeCompare(b.date));
-      break;
-    case 'date-desc':
-      sorted.sort((a, b) => b.date.localeCompare(a.date));
-      break;
-    case 'name-asc':
-      sorted.sort((a, b) => a.worker.name.localeCompare(b.worker.name));
-      break;
-    case 'name-desc':
-      sorted.sort((a, b) => b.worker.name.localeCompare(a.worker.name));
-      break;
-    case 'id-asc':
-      sorted.sort((a, b) => a.worker.biostarUserId.localeCompare(b.worker.biostarUserId, undefined, { numeric: true }));
-      break;
-    case 'id-desc':
-      sorted.sort((a, b) => b.worker.biostarUserId.localeCompare(a.worker.biostarUserId, undefined, { numeric: true }));
-      break;
-    case 'status':
-      sorted.sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
-      break;
-    default:
-      break;
-  }
-  return sorted;
+  const [field, dir] = sortBy.split('-');
+  const f = SORT_FIELDS[field];
+  return f ? sortItems(rows, f.get, dir === 'desc' ? 'desc' : 'asc') : [...rows];
 }
 
 // Buckets already-sorted rows into named sections. Row order within a
@@ -134,26 +140,35 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   const [sortBy, setSortBy] = useState('date-desc');
   const [groupBy, setGroupBy] = useState('date');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
-  const [analyticsOpen, setAnalyticsOpen] = useState(true);
+  // Phones open straight onto the records; the overview is a tap away.
+  const [analyticsOpen, setAnalyticsOpen] = useState(() => !window.matchMedia('(max-width: 760px)').matches);
+  const [filtersOpen, setFiltersOpen] = useState(false); // the extra filters, on phones
 
   const loadSummaries = useCallback(async () => {
     setLoading(true);
     setError('');
 
     try {
-      const params = new URLSearchParams({ from, to, limit: '500' });
-      const res = await fetch(`/api/attendance/summary?${params}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const all = [];
+      let totalCount = 0;
+      do {
+        const params = new URLSearchParams({ from, to, limit: String(LOAD_CHUNK), offset: String(all.length) });
+        const res = await fetch(`/api/attendance/summary?${params}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
 
-      if (res.status === 401) {
-        onLogout();
-        return;
-      }
-      if (!res.ok) throw new Error('Request failed');
+        if (res.status === 401) {
+          onLogout();
+          return;
+        }
+        if (!res.ok) throw new Error('Request failed');
 
-      const { summaries, total: totalCount } = await res.json();
-      setRows(summaries);
+        const { summaries, total: t } = await res.json();
+        totalCount = t;
+        all.push(...summaries);
+        if (summaries.length === 0) break;
+      } while (all.length < totalCount && all.length < MAX_LOADED);
+      setRows(all);
       setTotal(totalCount);
     } catch {
       setError('Could not load attendance records. Try again.');
@@ -225,32 +240,65 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
     }
   }
 
+  // Shifts worked back to back are double shifts. A Day + that evening's
+  // Night is one line, from the Day's clock-in to the Night's clock-out (its
+  // hours shared between the two stored shifts for the analytics); a Night +
+  // the next morning's Day stays two lines. Found from every loaded row, so
+  // filtering to one shift still marks them.
+  const records = useMemo(() => normalizeDoubles(rows), [rows]);
+  const lines = useMemo(() => mergeDoubles(records), [records]);
+  const doubleShifts = useMemo(() => doubleShiftRuns(records), [records]);
+  const isDoubleRow = useCallback((r) => !!r.parts || doubleShifts.has(r.id), [doubleShifts]);
+
   const visibleRows = useMemo(() => {
     const idQuery = filterId.trim().toLowerCase();
     const nameQuery = filterName.trim().toLowerCase();
-    return rows.filter(
+    return lines.filter(
       (r) =>
         (!idQuery || r.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
         (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery)) &&
-        (!filterShift || r.shift.name === filterShift) &&
+        (!filterShift || (filterShift === 'double' ? isDoubleRow(r) : r.parts ? true : r.shift.name === filterShift)) &&
         (!filterApproval || approvalState(r).key === filterApproval)
     );
-  }, [rows, filterId, filterName, filterShift, filterApproval]);
-
-  // Worker+date pairs with both a Day and a Night row — a double shift.
-  const doubleShifts = useMemo(() => {
-    const seen = new Map();
-    for (const r of rows) {
-      const k = `${r.worker.id}|${r.date.slice(0, 10)}`;
-      seen.set(k, (seen.get(k) || 0) + 1);
-    }
-    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
-  }, [rows]);
+  }, [lines, filterId, filterName, filterShift, filterApproval, isDoubleRow]);
 
   const sortedRows = useMemo(() => sortRows(visibleRows, sortBy), [visibleRows, sortBy]);
-  const groups = useMemo(() => groupRows(sortedRows, groupBy), [sortedRows, groupBy]);
+  const [sortField, sortDir] = sortBy.split('-');
+  // Clicking a heading: that column in its natural first direction, or the
+  // other direction if it's already the sort.
+  function sortByHeading(field) {
+    setSortBy(sortField === field ? `${field}-${sortDir === 'asc' ? 'desc' : 'asc'}` : `${field}-${SORT_FIELDS[field].first || 'asc'}`);
+  }
+  const allGroups = useMemo(() => groupRows(sortedRows, groupBy), [sortedRows, groupBy]);
   const isGrouped = groupBy !== 'none';
-  const allCollapsed = isGrouped && groups.length > 0 && groups.every((g) => collapsedGroups.has(g.key));
+  const allCollapsed = isGrouped && allGroups.length > 0 && allGroups.every((g) => collapsedGroups.has(g.key));
+
+  // Page through the rows in display order (group by group), then regroup
+  // the page — a group that spills over a page break is marked continued.
+  const displayRows = useMemo(() => allGroups.flatMap((g) => g.rows), [allGroups]);
+  const groupOf = useMemo(() => {
+    const m = new Map();
+    for (const g of allGroups) for (const r of g.rows) m.set(r.id, g);
+    return m;
+  }, [allGroups]);
+  const { pageItems: pageRows, pager } = usePagination(displayRows, {
+    id: 'dashboard',
+    defaultSize: 100,
+    noun: 'records',
+    resetKey: [from, to, filterId, filterName, filterShift, filterApproval, sortBy, groupBy].join('|')
+  });
+  const groups = useMemo(() => {
+    const out = [];
+    for (const r of pageRows) {
+      const g = groupOf.get(r.id);
+      const last = out[out.length - 1];
+      if (last && last.key === g.key) last.rows.push(r);
+      else out.push({ key: g.key, label: g.label, total: g.rows.length, continued: g.rows[0] !== r, rows: [r] });
+    }
+    return out;
+  }, [pageRows, groupOf]);
+
+  const activeFilters = [filterName, filterId, filterShift, filterApproval].filter(Boolean).length;
 
   function toggleGroup(key) {
     setCollapsedGroups((prev) => {
@@ -262,12 +310,19 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   }
 
   function toggleAllGroups() {
-    setCollapsedGroups(allCollapsed ? new Set() : new Set(groups.map((g) => g.key)));
+    setCollapsedGroups(allCollapsed ? new Set() : new Set(allGroups.map((g) => g.key)));
   }
 
   function renderRow(row) {
     const dateStr = row.date.slice(0, 10);
     const approval = approvalState(row);
+    const isDouble = isDoubleRow(row);
+    const note = isGuessed(row) ? { text: 'Shift guessed', warn: true, title: GUESSED_TITLE }
+      : row.source === 'unscheduled' ? { text: 'Unscheduled', warn: true, title: "Worked outside this worker's schedule — a supervisor can record an exception" }
+        : row.source === 'exception' && !isDouble ? { text: 'Exception' }
+          : row.source === 'suggested' ? { text: 'Schedule not confirmed', title: 'No confirmed schedule yet — judged against the pattern their punches fit, pending HR confirmation' }
+            : null;
+    const implied = 'No badge at the double-shift changeover — split at the scheduled time';
     return (
       <tr
         key={row.id}
@@ -276,45 +331,37 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedRow(row); }}
       >
-        <td className="mono" data-label="Employee ID">{row.worker.biostarUserId}</td>
-        <td data-label="Worker">{row.worker.name}</td>
+        <td data-label="Worker">
+          <div className="dash__name">{row.worker.name}</div>
+          <div className="dash__sub mono">{row.worker.biostarUserId}</div>
+        </td>
         <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
         <td data-label="Shift">
-          {row.shift.name}
-          {doubleShifts.has(`${row.worker.id}|${dateStr}`) && <div className="dash__shift-note">double shift</div>}
-          {row.source === 'exception' && <div className="dash__shift-note">exception</div>}
-          {row.source === 'unscheduled' && (
-            <div className="dash__shift-note dash__shift-note--warn" title="Worked outside this worker's schedule — a supervisor can record an exception">unscheduled</div>
+          {row.parts ? (
+            <>
+              <span className="shift-tag shift-tag--day">Day</span> + <span className="shift-tag shift-tag--night">Night</span>
+              <div>
+                <span className="tag tag--double" title="Worked the Day and the Night back to back — 2 shifts, shown as one line from the Day's clock-in to the Night's clock-out. Each shift is approved by its own supervisor.">
+                  Double shift · 2 shifts
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className={`shift-tag shift-tag--${row.shift.name === 'Night' ? 'night' : 'day'}`}>{row.shift.name}</span>
+              {isDouble && <div><span className="tag tag--double" title={doubleShiftTitle(doubleShifts.get(row.id))}>Double shift</span></div>}
+            </>
           )}
+          {note && <div className={`dash__sub ${note.warn ? 'dash__sub--warn' : ''}`} title={note.title}>{note.text}</div>}
         </td>
         <td className="mono" data-label="In">
-          {formatTime(row.checkIn)}{row.checkInImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+          {formatTime(row.checkIn)}{row.checkInImplied && <span title={implied}> *</span>}
         </td>
         <td className="mono" data-label="Out">
-          {formatTime(row.checkOut)}{row.checkOutImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+          {formatTime(row.checkOut)}{row.checkOutImplied && <span title={implied}> *</span>}
         </td>
         <td className="mono" data-label="Hours">{row.hoursWorked ?? '—'}</td>
-        <td className="mono" data-label="Regular">{row.regularHours ?? '—'}</td>
-        <td data-label="Status">
-          <span className={`status status--${statusClassName(row.status)}`}>
-            {STATUS_LABEL[row.status] || row.status}
-          </span>
-          {row.lateIn && row.status !== 'late' && (
-            <span className="status status--flag" title="Checked in after the late threshold">
-              ⚠ Late in
-            </span>
-          )}
-          {row.earlyCheckOut && (
-            <span className="status status--flag" title="Checked out well before the shift's scheduled end">
-              ⚠ Early checkout
-            </span>
-          )}
-          {row.hasMultiplePunches && (
-            <span className="status status--flag" title="More than one check-in or check-out was recorded — open for details">
-              ⚠ Multiple punches
-            </span>
-          )}
-        </td>
+        <td data-label="Status"><StatusTags row={row} /></td>
         <td data-label="Approval">
           <span className={`approval approval--${approval.key}`} title={approval.title}>{approval.label}</span>
         </td>
@@ -327,16 +374,9 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
       <table className="dash__table">
         <thead>
           <tr>
-            <th>Employee ID</th>
-            <th>Worker</th>
-            <th>Date</th>
-            <th>Shift</th>
-            <th>In</th>
-            <th>Out</th>
-            <th>Hours</th>
-            <th title="Hours inside the scheduled shift">Regular</th>
-            <th>Status</th>
-            <th>Approval</th>
+            {[['name', 'Worker'], ['date', 'Date'], ['shift', 'Shift'], ['in', 'In'], ['out', 'Out'], ['hours', 'Hours'], ['status', 'Status'], ['approval', 'Approval']].map(([field, label]) => (
+              <SortHeading key={field} label={label} active={sortField === field} dir={sortDir} onClick={() => sortByHeading(field)} />
+            ))}
           </tr>
         </thead>
         <tbody>{rowsToRender.map(renderRow)}</tbody>
@@ -346,68 +386,65 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
 
   return (
     <div className="dash">
-      <div className="dash__controlbar">
-        <div className="dash__controlgroup">
-          <div className="dash__controlgroup-label">Period</div>
-          <div className="dash__controlgroup-row">
-            <label>
-              From
-              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            </label>
-            <label>
-              To
-              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-            </label>
-            {user.role !== 'finance' && (
-              <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
-                {syncing ? 'Syncing…' : 'Refresh'}
-              </button>
-            )}
-          </div>
+      <div className="page__head">
+        <div>
+          <h2 className="page__title">Attendance</h2>
+          <p className="page__hint">Every shift in the period, worked out from the BioStar punches. Select a row to see its badges.</p>
         </div>
-
-        <div className="dash__controlgroup">
-          <div className="dash__controlgroup-label">Actions</div>
-          <div className="dash__controlgroup-row">
-            <button className="dash__export" onClick={handleExport}>Export CSV</button>
-            <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
-              {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
+        <div className="dash__actions">
+          {user.role !== 'finance' && (
+            <button className="btn" onClick={handleRefresh} disabled={syncing} title="Pull the latest punches from BioStar">
+              {syncing ? 'Syncing…' : 'Sync now'}
             </button>
-          </div>
+          )}
+          <button className="btn" onClick={handleExport}>Export CSV</button>
+          <button className="btn btn--primary" onClick={handleDownloadPdf} disabled={pdfBusy}>
+            {pdfBusy ? 'Preparing…' : 'Download PDF'}
+          </button>
         </div>
       </div>
 
-      <div className="dash__toolbar">
-        <div className="dash__toolbar-label">Filter &amp; organize</div>
-        <div className="dash__toolbar-row">
-          <label>
-            Employee ID
-            <input
-              type="text"
-              placeholder="Filter by ID…"
-              value={filterId}
-              onChange={(e) => setFilterId(e.target.value)}
-            />
+      <div className="dash__filters">
+        <div className="dash__filter-group">
+          <label className="field">
+            From
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
+            To
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </label>
+        </div>
+        <button
+          type="button"
+          className="btn dash__filters-toggle"
+          onClick={() => setFiltersOpen((v) => !v)}
+          aria-expanded={filtersOpen}
+        >
+          {filtersOpen ? 'Hide filters' : 'More filters'}
+          {activeFilters > 0 && <span className="dash__count">{activeFilters}</span>}
+        </button>
+        <div className="dash__filter-divider" aria-hidden="true" />
+        <div className={`dash__filter-group dash__filter-group--grow dash__filter-group--more ${filtersOpen ? 'is-open' : ''}`}>
+          <label className="field field--grow">
             Name
-            <input
-              type="text"
-              placeholder="Filter by name…"
-              value={filterName}
-              onChange={(e) => setFilterName(e.target.value)}
-            />
+            <input type="search" placeholder="Search by name…" value={filterName} onChange={(e) => setFilterName(e.target.value)} />
           </label>
-          <label>
+          <label className="field">
+            Employee ID
+            <input type="search" placeholder="e.g. C0662026" value={filterId} onChange={(e) => setFilterId(e.target.value)} style={{ width: 140 }} />
+          </label>
+          <label className="field">
             Shift
             <select value={filterShift} onChange={(e) => setFilterShift(e.target.value)}>
-              <option value="">Both</option>
+              <option value="">Day &amp; Night</option>
               <option value="Day">Day</option>
               <option value="Night">Night</option>
+              <option value="double">Double shifts only</option>
             </select>
           </label>
           {user.role !== 'finance' && (
-            <label>
+            <label className="field">
               Approval
               <select value={filterApproval} onChange={(e) => setFilterApproval(e.target.value)}>
                 <option value="">Any</option>
@@ -417,34 +454,13 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
               </select>
             </label>
           )}
-          <label>
-            Order by
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-              {SORT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Group by
-            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
-              {GROUP_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </label>
-          {isGrouped && groups.length > 0 && (
-            <button className="dash__toggle-all" onClick={toggleAllGroups}>
-              {allCollapsed ? 'Expand All' : 'Collapse All'}
-            </button>
-          )}
         </div>
       </div>
 
       {error && <div className="dash__error" role="alert">{error}</div>}
-      {!loading && !error && total > 500 && (
+      {!loading && !error && total > rows.length && (
         <div className="dash__error" role="status">
-          Showing the first 500 of {total} records for this range — narrow the date range to see all of them.
+          Showing the first {rows.length} of {total} records for this range — narrow the date range to see all of them.
         </div>
       )}
 
@@ -459,18 +475,35 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
             <span className="dash__section-title">Overview</span>
             <span className="dash__section-hint">at a glance for the selected period</span>
           </button>
-          {analyticsOpen && <AttendanceAnalytics rows={sortedRows} />}
+          {analyticsOpen && <AttendanceAnalytics rows={recordsOf(sortedRows)} />}
         </section>
       )}
 
       <section className="dash__section">
-        <div className="dash__section-title-static">
-          Detailed records
-          {!loading && (
-            <span className="dash__section-hint">
-              {sortedRows.length} record{sortedRows.length === 1 ? '' : 's'}
-            </span>
-          )}
+        <div className="dash__records-head">
+          <div className="dash__section-title">
+            Records
+            {!loading && <span className="dash__count">{sortedRows.length}</span>}
+          </div>
+          <div className="dash__records-tools">
+            <label className="dash__inline-field">
+              Order by
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                {(SORT_OPTIONS.includes(sortBy) ? SORT_OPTIONS : [...SORT_OPTIONS, sortBy]).map((v) => <option key={v} value={v}>{sortLabel(v)}</option>)}
+              </select>
+            </label>
+            <label className="dash__inline-field">
+              Group
+              <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+                {GROUP_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+              </select>
+            </label>
+            {isGrouped && groups.length > 0 && (
+              <button className="btn btn--small" onClick={toggleAllGroups}>
+                {allCollapsed ? 'Expand all' : 'Collapse all'}
+              </button>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -478,27 +511,35 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         ) : sortedRows.length === 0 ? (
           <div className="dash__empty">No attendance records match the current filters.</div>
         ) : !isGrouped ? (
-          renderTable(sortedRows)
+          <>
+            {renderTable(pageRows)}
+            {pager}
+          </>
         ) : (
-          <div className="dash__accordion">
-            {groups.map((group) => {
-              const collapsed = collapsedGroups.has(group.key);
-              return (
-                <div className="dash__group" key={group.key}>
-                  <button
-                    className="dash__group-header"
-                    onClick={() => toggleGroup(group.key)}
-                    aria-expanded={!collapsed}
-                  >
-                    <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
-                    <span className="dash__group-label">{group.label}</span>
-                    <span className="dash__group-count">{group.rows.length}</span>
-                  </button>
-                  {!collapsed && renderTable(group.rows)}
-                </div>
-              );
-            })}
-          </div>
+          <>
+            <div className="dash__accordion">
+              {groups.map((group) => {
+                const collapsed = collapsedGroups.has(group.key);
+                return (
+                  <div className="dash__group" key={group.key}>
+                    <button
+                      className="dash__group-header"
+                      onClick={() => toggleGroup(group.key)}
+                      aria-expanded={!collapsed}
+                    >
+                      <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
+                      <span className="dash__group-label">{group.label}{group.continued && <span className="dash__group-cont"> (continued)</span>}</span>
+                      <span className="dash__group-count">
+                        {group.rows.length === group.total ? group.total : `${group.rows.length} of ${group.total} on this page`}
+                      </span>
+                    </button>
+                    {!collapsed && renderTable(group.rows)}
+                  </div>
+                );
+              })}
+            </div>
+            {pager}
+          </>
         )}
       </section>
 
@@ -511,306 +552,245 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
       )}
 
       <style>{`
-        .dash {
-          min-height: 100vh;
-          background: #0F1B2C;
-          color: #E8EDF2;
-          font-family: 'IBM Plex Sans', system-ui, sans-serif;
-          padding: 32px 40px;
-          box-sizing: border-box;
-        }
-        /* Control bar — two clearly separated clusters: "what period am I
-           looking at" (left) and "what can I do with it" (right). */
-        .dash__controlbar {
+        .dash { color: var(--text); }
+        .dash__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+        /* One calm filter card: the period on the left, filters beside it. */
+        .dash__filters {
           display: flex;
-          justify-content: space-between;
           align-items: flex-start;
           flex-wrap: wrap;
-          gap: 24px;
-          padding-bottom: 20px;
-          margin-bottom: 20px;
-          border-bottom: 1px solid #1B2A40;
+          gap: 18px;
+          padding: 18px 22px;
+          margin-bottom: 28px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: var(--radius);
+          box-shadow: var(--shadow);
         }
-        .dash__controlgroup {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .dash__controlgroup-label, .dash__toolbar-label {
-          font-size: 10px;
-          font-weight: 600;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: #66768A;
-        }
-        .dash__controlgroup-row, .dash__toolbar-row {
-          display: flex;
-          align-items: flex-end;
-          gap: 12px;
-          flex-wrap: wrap;
-        }
-        .dash__controlgroup-row label, .dash__toolbar-row label {
-          display: flex;
-          flex-direction: column;
-          font-size: 12px;
-          color: #8A99AC;
-          gap: 4px;
-        }
-        .dash__controlgroup-row input,
-        .dash__toolbar-row input,
-        .dash__toolbar-row select {
-          background: #16243A;
-          border: 1px solid #24354F;
-          color: #E8EDF2;
-          padding: 7px 8px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 13px;
-        }
+        .dash__filter-group { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+        .dash__filter-group--grow { flex: 1; }
+        .dash__filter-divider { align-self: stretch; width: 1px; background: var(--line); }
 
-        /* View controls — filtering/sorting/grouping the data already
-           loaded for the period above; sits right against what it governs. */
-        .dash__toolbar {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          margin-bottom: 24px;
-          padding-bottom: 20px;
-          border-bottom: 1px solid #1B2A40;
-        }
-
-        .dash__refresh, .dash__pdf, .dash__export, .dash__toggle-all {
-          border: 1px solid #24354F;
-          background: transparent;
-          color: #E8EDF2;
-          padding: 8px 14px;
-          font-size: 13px;
-          cursor: pointer;
-          font-family: inherit;
-        }
-        .dash__refresh:disabled {
-          opacity: 0.6;
-          cursor: default;
-        }
-        .dash__refresh:hover:not(:disabled) {
-          background: #16243A;
-        }
-        .dash__pdf {
-          background: #3E8E7E;
-          border-color: #3E8E7E;
-          color: #0F1B2C;
-          font-weight: 600;
-        }
-        .dash__pdf:hover:not(:disabled) {
-          background: #4EA391;
-        }
-        .dash__pdf:disabled {
-          opacity: 0.6;
-          cursor: default;
-        }
-        .dash__export {
-          border-color: #3E8E7E;
-          color: #3E8E7E;
-        }
-        .dash__export:hover {
-          background: rgba(62, 142, 126, 0.12);
-        }
-        .dash__toggle-all:hover {
-          background: #16243A;
-        }
         .dash__error {
-          color: #C9A227;
-          font-size: 13px;
-          margin-bottom: 16px;
+          color: var(--warn);
+          background: var(--warn-bg);
+          border: 1px solid var(--warn-line);
+          border-radius: var(--radius-sm);
+          padding: 12px 16px;
+          font-size: 13.5px;
+          margin-bottom: 20px;
         }
         .dash__empty {
-          color: #8A99AC;
+          color: var(--muted);
           font-size: 14px;
-          padding: 40px 0;
+          padding: 56px 0;
           text-align: center;
+          background: var(--panel);
+          border: 1px dashed var(--line-strong);
+          border-radius: var(--radius);
         }
 
-        /* Content sections — "Overview" (collapsible) and "Detailed
-           records" each get their own labelled zone so it's clear which
-           question each part of the page answers. */
-        .dash__section {
-          margin-bottom: 32px;
-        }
+        .dash__section { margin-bottom: 36px; }
         .dash__section-header {
-          width: 100%;
           display: flex;
-          align-items: baseline;
+          align-items: center;
           gap: 10px;
           background: none;
           border: none;
-          border-bottom: 1px solid #24354F;
-          color: #E8EDF2;
-          padding: 0 0 12px;
-          margin-bottom: 20px;
-          font-family: inherit;
+          color: var(--text);
+          padding: 0;
+          margin-bottom: 16px;
           cursor: pointer;
           text-align: left;
         }
         .dash__section-title {
-          font-size: 15px;
-          font-weight: 700;
-        }
-        .dash__section-title-static {
           display: flex;
-          align-items: baseline;
+          align-items: center;
           gap: 10px;
-          border-bottom: 1px solid #24354F;
-          padding-bottom: 12px;
-          margin-bottom: 20px;
-          font-size: 15px;
+          font-size: 18px;
           font-weight: 700;
+          letter-spacing: -0.01em;
         }
-        .dash__section-hint {
-          font-size: 11px;
-          font-weight: 400;
-          color: #66768A;
-          margin-left: auto;
+        .dash__section-hint { font-size: 13px; font-weight: 400; color: var(--faint); }
+        .dash__count {
+          font-size: 12.5px;
+          font-weight: 600;
+          color: var(--accent);
+          background: var(--accent-bg);
+          border-radius: 999px;
+          padding: 2px 10px;
         }
-        .dash__accordion {
+        .dash__records-head {
           display: flex;
-          flex-direction: column;
-          gap: 10px;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          flex-wrap: wrap;
+          margin-bottom: 16px;
         }
+        .dash__records-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+        .dash__inline-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+        .dash__inline-field select {
+          background: var(--panel);
+          border: 1px solid var(--line-strong);
+          border-radius: var(--radius-sm);
+          color: var(--text);
+          padding: 6px 10px;
+          font-size: 13.5px;
+        }
+
+        .dash__accordion { display: flex; flex-direction: column; gap: 14px; }
         .dash__group {
-          border: 1px solid #1B2A40;
+          border: 1px solid var(--line);
+          border-radius: var(--radius);
+          background: var(--panel);
+          box-shadow: var(--shadow);
+          overflow: hidden;
         }
         .dash__group-header {
           width: 100%;
           display: flex;
           align-items: center;
           gap: 10px;
-          background: #16243A;
+          background: var(--panel-2);
           border: none;
-          color: #E8EDF2;
-          padding: 10px 14px;
-          font-size: 13px;
-          font-family: inherit;
+          border-bottom: 1px solid var(--line-soft);
+          color: var(--text);
+          padding: 13px 18px;
+          font-size: 14px;
+          font-weight: 600;
           cursor: pointer;
           text-align: left;
         }
-        .dash__chevron {
-          display: inline-block;
-          color: #3E8E7E;
-          transition: transform 0.15s ease;
-        }
-        .dash__chevron--collapsed {
-          transform: rotate(-90deg);
-        }
-        .dash__group-label {
-          font-family: 'IBM Plex Mono', monospace;
-          flex: 1;
-        }
-        .dash__group-count {
-          color: #8A99AC;
-          font-size: 12px;
-        }
-        .dash__table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 14px;
+        .dash__group-header:hover { background: var(--hover); }
+        .dash__chevron { display: inline-block; color: var(--accent); transition: transform 0.15s ease; }
+        .dash__chevron--collapsed { transform: rotate(-90deg); }
+        .dash__group-label { flex: 1; }
+        .dash__group-count { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+
+        .dash__table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        .dash > .dash__section > .dash__table {
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: var(--radius);
+          box-shadow: var(--shadow);
+          overflow: hidden;
+          border-collapse: separate;
+          border-spacing: 0;
         }
         .dash__table th {
           text-align: left;
+          font-size: 11.5px;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: var(--faint);
+          padding: 11px 18px;
+          border-bottom: 1px solid var(--line-soft);
+        }
+        .dash__table td { padding: 12px 18px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+        .dash__table tbody tr:last-child td { border-bottom: none; }
+        .dash__row { cursor: pointer; transition: background 0.12s ease; }
+        .dash__row:hover td, .dash__row:focus td { background: var(--hover); }
+        .dash__row:focus { outline: none; }
+        .dash__row:focus td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+        .dash__name { font-weight: 600; }
+        .dash__sub { font-size: 12px; color: var(--faint); margin-top: 2px; }
+        .dash__sub--warn { color: var(--warn); }
+        .dash__flags { font-size: 12px; color: var(--warn); margin-top: 4px; cursor: help; }
+        .dash__flags::before { content: '⚠ '; }
+        .mono { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+        .shift-tag {
+          display: inline-block;
           font-size: 12px;
-          font-weight: 500;
-          color: #8A99AC;
-          padding: 10px 12px;
-          border-bottom: 1px solid #24354F;
+          font-weight: 600;
+          padding: 2px 10px;
+          border-radius: 999px;
         }
-        .dash__table td {
-          padding: 12px;
-          border-bottom: 1px solid #1B2A40;
-        }
-        .dash__row {
-          cursor: pointer;
-        }
-        .dash__row:hover td, .dash__row:focus td {
-          background: #16243A;
-        }
-        .dash__row:focus {
-          outline: none;
-        }
-        .dash__row:focus td:first-child {
-          box-shadow: inset 3px 0 0 #3E8E7E;
-        }
-        .mono {
-          font-family: 'IBM Plex Mono', monospace;
-        }
+        .shift-tag--day { color: #8C5300; background: #FAEBC8; }
+        .shift-tag--night { color: #3F3AB8; background: #E2E3F8; }
+
         .status {
           font-size: 12px;
-          padding: 3px 8px;
+          font-weight: 600;
+          padding: 3px 11px;
           border: 1px solid transparent;
+          border-radius: 999px;
           display: inline-block;
-        }
-        .status--ok {
-          color: #3E8E7E;
-          border-color: #2A5F53;
-        }
-        .status--late {
-          color: #C9A227;
-          border-color: #8A6E1B;
-        }
-        .status--pending {
-          color: #8A99AC;
-          border-color: #3A4A61;
-        }
-        .status--early {
-          color: #5B8DC9;
-          border-color: #2E4E77;
-        }
-        .status--critical {
-          color: #C9535A;
-          border-color: #7A3236;
-        }
-        .status--flag {
-          color: #C9A227;
-          border-color: #8A6E1B;
-          margin-left: 6px;
-        }
-        .dash__shift-note {
-          font-size: 11px;
-          color: #8A99AC;
-          margin-top: 2px;
-        }
-        .dash__shift-note--warn {
-          color: #C9A227;
-        }
-        .approval {
-          font-size: 11px;
           white-space: nowrap;
         }
-        .approval--approved { color: #3E8E7E; }
-        .approval--pending { color: #8A99AC; }
-        .approval--changed { color: #C9A227; }
+        .status--ok { color: var(--accent); background: var(--accent-bg); }
+        .status--late { color: var(--warn); background: var(--warn-bg); }
+        .status--pending { color: var(--muted); background: var(--panel-2); border-color: var(--line); }
+        .status--early { color: var(--info); background: var(--info-bg); }
+        .status--critical { color: var(--critical); background: var(--critical-bg); }
 
-        @media (max-width: 640px) {
-          .dash { padding: 20px; }
-          .dash__controlbar { flex-direction: column; gap: 20px; }
-          .dash__section-hint { margin-left: 0; }
+        .approval { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; }
+        .approval::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+        .approval--approved { color: var(--accent); }
+        .approval--pending { color: var(--faint); }
+        .approval--changed { color: var(--warn); }
+
+        .dash__filters-toggle { display: none; }
+
+        @media (max-width: 900px) {
+          .dash__actions { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; }
+          .dash__actions .btn { padding-left: 8px; padding-right: 8px; }
+          .dash__filters { padding: 14px; gap: 12px; margin-bottom: 20px; border-radius: 16px; }
+          .dash__filter-divider { display: none; }
+          .dash__filter-group { flex: 1 1 100%; gap: 12px; }
+          .dash__filter-group .field { flex: 1 1 calc(50% - 6px); min-width: 0; }
+          .dash__filter-group .field--grow { flex-basis: 100%; }
+          .dash__filter-group .field input { width: 100% !important; }
+          .dash__filters-toggle { display: inline-flex; flex: 1 1 100%; }
+          .dash__filter-group--more:not(.is-open) { display: none; }
+          .dash__section { margin-bottom: 26px; }
+          .dash__section-header { min-height: 40px; margin-bottom: 12px; }
+          .dash__section-hint { display: none; }
+          .dash__records-tools { flex: 1 1 100%; gap: 10px; }
+          .dash__inline-field { flex: 1 1 calc(50% - 5px); }
+          .dash__inline-field select { flex: 1; min-width: 0; min-height: 42px; font-size: 16px; }
+          .dash__group-header { min-height: 50px; padding: 12px 16px; }
+        }
+
+        /* Each shift is a card: worker on top, the times in a three-column
+           grid, late/early tags along the bottom. */
+        @media (max-width: 760px) {
           .dash__table thead { display: none; }
-          .dash__table, .dash__table tbody, .dash__table tr, .dash__table td {
-            display: block;
-            width: 100%;
-          }
+          .dash__table, .dash__table tbody { display: block; width: 100%; }
+          .dash > .dash__section > .dash__table { background: none; border: none; box-shadow: none; overflow: visible; }
+          .dash > .dash__section > .dash__table tbody { display: flex; flex-direction: column; gap: 10px; }
           .dash__table tr {
-            border-bottom: 1px solid #24354F;
-            padding: 10px 0;
+            display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px;
+            padding: 14px 16px;
           }
-          .dash__table td {
-            border-bottom: none;
-            padding: 3px 0;
+          .dash > .dash__section > .dash__table tr {
+            background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
           }
-          .dash__table td:before {
-            content: attr(data-label);
-            color: #8A99AC;
-            font-size: 11px;
-            display: inline-block;
-            width: 90px;
+          .dash__group .dash__table tr { border-bottom: 1px solid var(--line-soft); }
+          .dash__group .dash__table tr:last-child { border-bottom: none; }
+          .dash__table td { display: block; border: none; padding: 0; min-width: 0; background: none !important; }
+          .dash__table td::before {
+            content: attr(data-label); display: block; margin-bottom: 2px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
           }
+          .dash__table td:empty { display: none; }
+          .dash__table td[data-label='Worker'] { grid-column: 1 / 3; order: 0; }
+          .dash__table td[data-label='Worker']::before { display: none; }
+          .dash__table td[data-label='Worker'] .dash__name { font-size: 15.5px; }
+          .dash__table td[data-label='Approval'] { order: 1; justify-self: end; align-self: start; }
+          .dash__table td[data-label='Approval']::before { display: none; }
+          .dash__table td[data-label='Date'] { order: 2; }
+          .dash__table td[data-label='Shift'] { order: 3; }
+          .dash__table td[data-label='Hours'] { order: 4; }
+          .dash__table td[data-label='In'] { order: 5; }
+          .dash__table td[data-label='Out'] { order: 6; }
+          .dash__table td[data-label='Status'] { order: 7; grid-column: 1 / -1; }
+          .dash__table td[data-label='Status']::before { display: none; }
+          .dash__row:active { background: var(--hover); }
+          .dash__row:focus td:first-child { box-shadow: none; }
         }
       `}</style>
     </div>

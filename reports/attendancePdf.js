@@ -9,6 +9,7 @@
 // check marks, etc. — icons are drawn as vector paths instead).
 
 const PDFDocument = require('pdfkit');
+const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('./doubleShift');
 
 const TZ = 'Africa/Kampala';
 const PAGE_W = 595.28;
@@ -44,17 +45,26 @@ const STATUS = {
   'in-progress': { label: 'In progress', fg: '#1F6FA8', bg: '#E2EFF9', bar: '#9CC7EA' }
 };
 const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-checkin', 'no-show', 'in-progress'];
-const STATUS_RANK = { 'no-show': 0, late: 1, 'no-checkout': 2, 'no-checkin': 2, early: 3, 'on-time': 4, 'in-progress': 5 };
-
-const SORT_LABELS = {
-  'date-desc': 'Date (newest first)',
-  'date-asc': 'Date (oldest first)',
-  'name-asc': 'Name (A-Z)',
-  'name-desc': 'Name (Z-A)',
-  'id-asc': 'Employee ID (A-Z)',
-  'id-desc': 'Employee ID (Z-A)',
-  status: 'Status (issues first)'
+// Sorts, as "<field>-<asc|desc>" — the same fields as the dashboard's
+// "Order by" and clickable headings (SORT_FIELDS in AttendanceDashboard.jsx).
+// Status sorts Late in + Early out first, then Late in, then Early out.
+const TAG_ORDER = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 };
+function approvalWord(r) {
+  if (r.changedAfterApproval) return 'Changed';
+  return r.approvedAt ? 'Approved' : 'Waiting';
+}
+const SORT_FIELDS = {
+  date: { get: (r) => new Date(r.date).getTime(), labels: ['Date (oldest first)', 'Date (newest first)'] },
+  name: { get: (r) => r.worker.name, labels: ['Name (A-Z)', 'Name (Z-A)'] },
+  id: { get: (r) => r.worker.biostarUserId, labels: ['Employee ID (A-Z)', 'Employee ID (Z-A)'] },
+  shift: { get: (r) => r.shift.name, labels: ['Shift (Day first)', 'Shift (Night first)'] },
+  in: { get: (r) => (r.checkIn ? new Date(r.checkIn).getTime() : null), labels: ['Clock in (earliest first)', 'Clock in (latest first)'] },
+  out: { get: (r) => (r.checkOut ? new Date(r.checkOut).getTime() : null), labels: ['Clock out (earliest first)', 'Clock out (latest first)'] },
+  hours: { get: (r) => r.hoursWorked, labels: ['Hours (fewest first)', 'Hours (most first)'] },
+  status: { get: (r) => TAG_ORDER[rowTags(r).join(',')], labels: ['Status (Late in / Early out first)', 'Status (Early out first)'] },
+  approval: { get: (r) => approvalWord(r), labels: ['Approval (A-Z)', 'Approval (Z-A)'] }
 };
+const SORT_LABELS = Object.fromEntries(Object.entries(SORT_FIELDS).flatMap(([f, { labels }]) => [[`${f}-asc`, labels[0]], [`${f}-desc`, labels[1]]]));
 const GROUP_LABELS = { date: 'Grouped by date', worker: 'Grouped by employee', none: 'No grouping' };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -109,19 +119,21 @@ const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
 
 // ---------- view preparation (mirrors the dashboard's filter/sort/group) ----------
 
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 function sortRows(rows, sortBy) {
-  const out = [...rows];
-  const byId = (a, b) => a.worker.biostarUserId.localeCompare(b.worker.biostarUserId, undefined, { numeric: true });
-  switch (sortBy) {
-    case 'date-asc': out.sort((a, b) => a.date - b.date); break;
-    case 'name-asc': out.sort((a, b) => a.worker.name.localeCompare(b.worker.name)); break;
-    case 'name-desc': out.sort((a, b) => b.worker.name.localeCompare(a.worker.name)); break;
-    case 'id-asc': out.sort(byId); break;
-    case 'id-desc': out.sort((a, b) => byId(b, a)); break;
-    case 'status': out.sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]); break;
-    default: out.sort((a, b) => b.date - a.date); // date-desc
-  }
-  return out;
+  const [field, dirWord] = String(sortBy).split('-');
+  const f = SORT_FIELDS[field] || SORT_FIELDS.date;
+  const dir = SORT_FIELDS[field] ? (dirWord === 'desc' ? -1 : 1) : -1; // default: newest first
+  const empty = (v) => v === null || v === undefined || v === '';
+  return rows
+    .map((r, i) => ({ r, i, v: f.get(r) }))
+    .sort((a, b) => {
+      if (empty(a.v) !== empty(b.v)) return empty(a.v) ? 1 : -1; // empties last
+      if (empty(a.v)) return a.i - b.i;
+      const c = typeof a.v === 'number' && typeof b.v === 'number' ? a.v - b.v : collator.compare(String(a.v), String(b.v));
+      return dir * c || a.i - b.i;
+    })
+    .map((x) => x.r);
 }
 
 function countByStatus(rows) {
@@ -155,7 +167,9 @@ function groupRows(rows, groupBy) {
 
 // Mirrored by src/attendanceStats.js's computeAnalytics() for the
 // dashboard's on-screen analytics panel — keep the two in sync.
-function computeStats(rows) {
+// rows may carry doubleRun (set by buildAttendanceReport); double shifts
+// are counted once, and only those starting in the range.
+function computeStats(rows, from, to) {
   const counts = countByStatus(rows);
   const workers = new Set();
   const byDate = new Map();
@@ -212,6 +226,7 @@ function computeStats(rows) {
     multiPunch,
     unscheduled,
     unapproved,
+    doubleShifts: new Set(rows.filter((r) => r.doubleRun && (!from || r.doubleRun.startDate >= from) && (!to || r.doubleRun.startDate <= to)).map((r) => r.doubleRun.id)).size,
     byShift,
     days: [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     attention
@@ -323,7 +338,7 @@ function drawKpis(doc, y, stats) {
   const punctuality = stats.completed ? `${pct(stats.punctual, stats.completed)}%` : '-';
 
   const cards = [
-    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'}`, color: C.navy2 },
+    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'} - ${stats.doubleShifts} double shift${stats.doubleShifts === 1 ? '' : 's'}`, color: C.navy2 },
     { label: 'WORKERS', value: String(stats.workers), sub: 'with attendance in range', color: C.navy2 },
     { label: 'COMPLETED SHIFTS', value: String(stats.completed), sub: `${pct(stats.completed, stats.total)}% of records have in + out`, color: C.teal },
     { label: 'HOURS WORKED', value: stats.hoursTotal.toFixed(1), sub: stats.completed ? `avg ${stats.hoursAvg.toFixed(1)} h per shift` : 'no completed shifts', color: C.teal },
@@ -512,7 +527,7 @@ function detailCols(showDate) {
     { key: 'id', label: 'EMPLOYEE ID', w: 66 },
     { key: 'name', label: 'WORKER', w: showDate ? 126 : 170 },
     ...(showDate ? [{ key: 'date', label: 'DATE', w: 48 }] : []),
-    { key: 'shift', label: 'SHIFT', w: 50 },
+    { key: 'shift', label: 'SHIFT', w: 58 },
     { key: 'in', label: 'IN', w: 38 },
     { key: 'out', label: 'OUT', w: 38 },
     { key: 'hours', label: 'HRS', w: 36 },
@@ -523,13 +538,25 @@ function detailCols(showDate) {
   return fixed;
 }
 
-function drawStatusPill(doc, status, x, cy) {
-  const st = STATUS[status] || { label: status, fg: C.muted, bg: C.zebra };
-  doc.font('Helvetica-Bold').fontSize(6.6);
+// The Status column shows only Late in / Early out (blank otherwise).
+const TAG_PILL = {
+  'late-in': { label: 'Late in', fg: STATUS.late.fg, bg: STATUS.late.bg },
+  'early-out': { label: 'Early out', fg: STATUS['no-show'].fg, bg: STATUS['no-show'].bg }
+};
+function rowTags(row) {
+  const tags = [];
+  if (row.status === 'late' || row.lateIn) tags.push('late-in');
+  if (row.earlyCheckOut) tags.push('early-out');
+  return tags;
+}
+
+function drawStatusPill(doc, status, x, cy, h = 13, size = 6.6) {
+  const st = TAG_PILL[status] || STATUS[status] || { label: status, fg: C.muted, bg: C.zebra };
+  doc.font('Helvetica-Bold').fontSize(size);
   const label = safe(st.label);
   const w = doc.widthOfString(label) + 12;
-  doc.roundedRect(x, cy - 6.5, w, 13, 6.5).fill(st.bg);
-  txt(doc, label, x, cy - 3.3, { size: 6.6, font: 'Helvetica-Bold', color: st.fg, width: w, align: 'center' });
+  doc.roundedRect(x, cy - h / 2, w, h, h / 2).fill(st.bg);
+  txt(doc, label, x, cy - size / 2, { size, font: 'Helvetica-Bold', color: st.fg, width: w, align: 'center' });
 }
 
 function drawDetailRow(doc, y, row, cols, i) {
@@ -539,15 +566,20 @@ function drawDetailRow(doc, y, row, cols, i) {
   const mid = y + rowH / 2;
 
   const allFlags = [];
-  if (row.changedAfterApproval) allFlags.push('Changed after approval');
+  // A merged Day + Night line: each shift has its own supervisor's approval.
+  const unapproved = (row.parts || [row]).filter((p) => p.changedAfterApproval || !p.approvedAt);
+  if (row.parts && unapproved.length === 1) {
+    allFlags.push(unapproved[0].changedAfterApproval ? `${unapproved[0].shift.name} changed after approval` : `${unapproved[0].shift.name} not yet approved`);
+  } else if (row.changedAfterApproval) allFlags.push('Changed after approval');
   else if (!row.approvedAt) allFlags.push('Not yet approved');
-  if (row.lateIn && row.status !== 'late') allFlags.push('Late in');
-  if (row.earlyCheckOut) allFlags.push('Early check-out');
   if (row.hasMultiplePunches) allFlags.push('Multiple punches');
   if (row.checkInImplied || row.checkOutImplied) allFlags.push('Implied time');
   // Two lines fit in a row; the rest are summarised.
   const flags = allFlags.length > 2 ? [allFlags[0], `${allFlags[1]} +${allFlags.length - 2}`] : allFlags;
-  const sourceNote = row.source === 'exception' ? 'exception' : row.source === 'unscheduled' ? 'unscheduled' : null;
+  const guessed = row.source === 'unscheduled' && (!row.checkIn || !row.checkOut);
+  const otherNote = guessed ? 'shift guessed' : { unscheduled: 'unscheduled', suggested: 'schedule not confirmed', ...(row.doubleRun ? {} : { exception: 'exception' }) }[row.source] || null;
+  const doubleNote = row.parts ? 'double - 2 shifts' : row.doubleRun ? `double (${row.doubleRun.label})` : null;
+  const sourceNote = doubleNote ? `${doubleNote}${otherNote ? `, ${otherNote}` : ''}` : otherNote;
 
   let x = M;
   for (const col of cols) {
@@ -566,7 +598,7 @@ function drawDetailRow(doc, y, row, cols, i) {
       case 'shift':
         if (sourceNote) {
           txt(doc, row.shift.name, px, mid - 8, { size: 7.8, color: C.ink });
-          txt(doc, fit(doc, sourceNote, inner, 'Helvetica', 5.8), px, mid + 1.2, { size: 5.8, color: STATUS.late.fg });
+          txt(doc, fit(doc, sourceNote, inner, 'Helvetica', 5.8), px, mid + 1.2, { size: 5.8, color: row.doubleRun ? C.tealDark : STATUS.late.fg });
         } else {
           txt(doc, row.shift.name, px, mid - 4, { size: 7.8, color: C.ink });
         }
@@ -582,9 +614,12 @@ function drawDetailRow(doc, y, row, cols, i) {
         txt(doc, h || '-', px, mid - 4, { size: 8, color: h ? C.ink : C.faint });
         break;
       }
-      case 'status':
-        drawStatusPill(doc, row.status, x + 6, mid);
+      case 'status': {
+        const tags = rowTags(row);
+        if (tags.length === 1) drawStatusPill(doc, tags[0], x + 6, mid);
+        else if (tags.length === 2) tags.forEach((t, k) => drawStatusPill(doc, t, x + 6, mid - 5.5 + k * 11, 10, 5.8));
         break;
+      }
       case 'flags':
         flags.forEach((f, k) => {
           const fy = flags.length === 1 ? mid - 3 : mid - 8 + k * 8.4;
@@ -602,6 +637,8 @@ function drawDetailRow(doc, y, row, cols, i) {
 function groupCountsText(rows) {
   const c = countByStatus(rows);
   const bits = [`${rows.length} record${rows.length === 1 ? '' : 's'}`];
+  const doubles = new Set(rows.filter((r) => r.doubleRun).map((r) => r.doubleRun.id)).size;
+  if (doubles) bits.push(`${doubles} double shift${doubles === 1 ? '' : 's'}`);
   if (c.late) bits.push(`${c.late} late`);
   if (c['no-checkout']) bits.push(`${c['no-checkout']} no checkout`);
   if (c['no-checkin']) bits.push(`${c['no-checkin']} no check-in`);
@@ -679,7 +716,9 @@ function drawNotes(doc, cur, shifts) {
     ['No checkout', 'A check-in was recorded but no check-out. Late/on-time timing is not classified for these records.'],
     ['No check-in', 'A check-out was recorded but no check-in for that shift.'],
     ['No-show', 'The worker was scheduled for the shift (crew rotation, permanent schedule or a supervisor exception) but has no punches for it.'],
-    ['Flags', `"Early check-out" means leaving before the scheduled shift end. "Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
+    ['Status', 'The Status column shows only "Late in" (checked in after the grace period) and "Early out" (left before the scheduled shift end), or both. It is blank for every other record.'],
+    ['Double shift', 'Two shifts worked back to back. A Day and that evening\'s Night is one line, "Day + Night", from the Day\'s clock-in to the Night\'s clock-out (the Night stays on the Day\'s date even when it ends the next morning); it counts as 2 shifts and 1 double shift. A Night and the next morning\'s Day stay two lines, each on its own date, marked "double". Each shift is approved by its own crew\'s supervisor.'],
+    ['Flags', `"Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
     ['Hours', 'Check-out minus check-in. No meal or break deduction and no overtime rules are applied.'],
     ['Approval', `Records are approved by the crew's supervisor after each shift (escalated to HR and the Admin Assistant after 48 hours), or by HR at month end for permanent staff. Approved records are locked; later changes show as "Changed after approval" until re-approved.`],
     ['Times', `All times are East Africa Time (EAT, UTC+3). Shifts: ${shiftLine}. Night shifts are dated by the evening they start.`]
@@ -718,7 +757,10 @@ function drawFooter(doc, meta, page, pages) {
   const y = PAGE_H - 34;
   doc.moveTo(M, y).lineTo(M + W, y).lineWidth(0.6).strokeColor(C.line).stroke();
   txt(doc, `UCAA Casuals  |  Attendance Report  |  ${meta.subcontractorName}`, M, y + 8, { size: 7, color: C.muted });
-  txt(doc, `Confidential - generated ${fmtStamp(meta.generatedAt)}`, M, y + 18, { size: 6.4, color: C.faint });
+  const stampLine = meta.download
+    ? `Confidential - downloaded by ${meta.download.by} on ${meta.download.atText} - Ref ${meta.download.ref}`
+    : `Confidential - generated ${fmtStamp(meta.generatedAt)}`;
+  txt(doc, fit(doc, stampLine, W - 70, 'Helvetica', 6.4), M, y + 18, { size: 6.4, color: C.faint });
   txt(doc, `Page ${page} of ${pages}`, M, y + 8, { size: 7.5, font: 'Helvetica-Bold', color: C.navy, width: W, align: 'right' });
 }
 
@@ -730,9 +772,11 @@ function drawFooter(doc, meta, page, pages) {
  * @param {Array}    opts.shifts  Shift rows, for the legend and shift split
  * @param {object}   opts.meta    { subcontractorName, from, to (YYYY-MM-DD), generatedAt: Date,
  *                                  filters: { id, name }, sortBy, groupBy }
+ * @param {Array}    [opts.doubleRows] rows to find double shifts in — the range plus a
+ *                                  day either side, so ones crossing its edge are seen
  * @returns {PDFDocument} an ended document — pipe it to the response
  */
-function buildAttendanceReport({ rows, shifts, meta }) {
+function buildAttendanceReport({ rows, shifts, meta, doubleRows }) {
   const doc = new PDFDocument({
     size: 'A4',
     margin: 0,
@@ -740,14 +784,22 @@ function buildAttendanceReport({ rows, shifts, meta }) {
     info: {
       Title: `Attendance Report ${meta.from} to ${meta.to}`,
       Author: 'UCAA Casuals Attendance Portal',
-      Subject: `Casuals attendance for ${meta.subcontractorName}`,
+      Subject: meta.download ? meta.download.text : `Casuals attendance for ${meta.subcontractorName}`,
+      ...(meta.download ? { Keywords: `download-ref:${meta.download.ref}` } : {}),
       Creator: 'UCAA Casuals Attendance Portal'
     }
   });
 
-  const sorted = sortRows(rows, meta.sortBy);
+  // Double shifts: a same-date Day + Night pair shares its hours between its
+  // two records (for the counts) and is listed as one merged line.
+  const wide = normalizeDoubles(doubleRows || rows);
+  const byId = new Map(wide.map((r) => [r.id, r]));
+  const runs = doubleShiftRuns(wide);
+  const records = rows.map((r) => byId.get(r.id) || r).map((r) => ({ ...r, doubleRun: runs.get(r.id) || null }));
+  const lines = mergeDoubles(records);
+  const sorted = sortRows(lines, meta.sortBy);
   const groups = groupRows(sorted, meta.groupBy);
-  const stats = computeStats(sorted);
+  const stats = computeStats(records, meta.from, meta.to);
   const cur = makeCursor(doc);
 
   const bandBottom = drawBand(doc, meta);
@@ -778,4 +830,4 @@ function buildAttendanceReport({ rows, shifts, meta }) {
   return doc;
 }
 
-module.exports = { buildAttendanceReport, SORT_LABELS, GROUP_LABELS };
+module.exports = { buildAttendanceReport, SORT_LABELS, GROUP_LABELS, C, STATUS, safe, txt, fit, emblem };
