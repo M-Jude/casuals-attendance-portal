@@ -144,6 +144,25 @@ portal and API share one URL (`http://<server>:<PORT>/`).
 Recommended: protect `master` (Settings → Branches) to require pull requests
 and the **Test & build** check, so only passing code is deployed.
 
+### Public access (Cloudflare Tunnel)
+
+To reach the portal from outside the office network without opening any
+inbound port, `deploy/windows/setup-tunnel.ps1` installs `cloudflared` as a
+Windows service that connects out to Cloudflare, which serves the public
+HTTPS address. Needs a domain on a Cloudflare account.
+
+1. In the Cloudflare dashboard: **Zero Trust → Networks → Tunnels → Create
+   a tunnel → Cloudflared**, and copy the token from the install command.
+2. On the tunnel's **Public Hostname** tab, add e.g. `portal.<your-domain>`
+   → service **HTTP**, URL `localhost:<PORT>`.
+3. From an elevated PowerShell: `.\deploy\windows\setup-tunnel.ps1 -Token <token>`.
+4. Set `APP_BASE_URL` in the app's `.env` to the public URL (used in email
+   links) and restart the `CasualsPortal` service.
+
+Before exposing it, make sure `JWT_SECRET` is a fresh random value. Once
+everyone uses the public URL, `HOST=127.0.0.1` in `.env` stops the portal
+listening on the LAN at all (the tunnel connects locally).
+
 ## Verifying the setup
 
 1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against
