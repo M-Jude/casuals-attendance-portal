@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatDateLabel, formatDateTime, todayEat } from './api';
+import { usePagination } from './Pagination';
+import SupervisorDecision from './SupervisorDecision';
+import { useSort } from './useSort';
+
+function addDays(dateStr, n) {
+  return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+}
 
 const EDITORS = ['sysadmin', 'hr', 'admin_assistant'];
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -199,18 +206,34 @@ function CrewsTab({ api, user }) {
 
 function ScheduleEditor({ api, worker, crews, onSaved, onCancel }) {
   const [value, setValue] = useState(worker.schedule.type === 'crew' ? `crew:${worker.schedule.crewId}` : worker.schedule.type);
-  const [effectiveFrom, setEffectiveFrom] = useState(todayEat());
+  // A worker's first-ever schedule covers their whole history by default:
+  // from the day before their first punch (so a Night whose check-out was
+  // that first punch is covered too). A change to an existing schedule
+  // starts today by default.
+  const firstSchedule = !worker.hasSchedule && worker.firstPunchDate;
+  const historyStart = firstSchedule ? addDays(worker.firstPunchDate, -1) : null;
+  const [effectiveFrom, setEffectiveFrom] = useState(historyStart || todayEat());
   const [error, setError] = useState('');
+  const [decision, setDecision] = useState(null); // set when the worker is a supervisor being moved
+  const [busy, setBusy] = useState(false);
 
-  async function save() {
+  async function save(supervisorAction) {
     setError('');
+    setBusy(true);
     const [type, crewId] = value.startsWith('crew:') ? ['crew', Number(value.slice(5))] : [value, null];
     try {
-      await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom } });
+      await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom, supervisorAction } });
       onSaved();
     } catch (err) {
-      setError(err.message);
+      if (err.data?.decision) setDecision(err.data.decision);
+      else setError(err.message);
+    } finally {
+      setBusy(false);
     }
+  }
+
+  if (decision) {
+    return <SupervisorDecision decision={decision} busy={busy} onChoose={(action) => save(action)} onCancel={() => setDecision(null)} />;
   }
 
   return (
@@ -223,9 +246,16 @@ function ScheduleEditor({ api, worker, crews, onSaved, onCancel }) {
           <option value="unassigned">Unassigned</option>
         </select>
         <label className="field">from<input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></label>
-        <button className="btn btn--primary btn--small" onClick={save}>Save</button>
+        <button className="btn btn--primary btn--small" onClick={() => save()} disabled={busy}>Save</button>
         <button className="btn btn--small" onClick={onCancel}>Cancel</button>
       </div>
+      {firstSchedule && (
+        <p className="small muted" style={{ margin: '6px 0 0' }}>
+          {effectiveFrom === historyStart
+            ? `Their first schedule — applies to all their shifts on record (first badge ${formatDateLabel(worker.firstPunchDate)}).`
+            : 'Their first schedule — shifts before this date stay judged without a schedule.'}
+        </p>
+      )}
       {error && <div className="error">{error}</div>}
     </div>
   );
@@ -255,6 +285,15 @@ function WorkersTab({ api, user }) {
     );
   }, [workers, query, filter]);
 
+  const { sorted: sortedWorkers, th, sortKey } = useSort(visible, {
+    id: (w) => w.biostarUserId,
+    worker: (w) => w.name,
+    schedule: (w) => w.schedule.label,
+    today: (w) => (w.today.length ? w.today.join(' + ') : 'Off'),
+    pattern: (w) => w.suggestion?.label
+  });
+  const { pageItems: pageWorkers, pager } = usePagination(sortedWorkers, { id: 'schedule-workers', defaultSize: 50, noun: 'workers', resetKey: `${query}|${filter}|${sortKey}` });
+
   const scheduleLabels = [...new Set(workers.map((w) => w.schedule.label))].filter((l) => l !== 'Unassigned').sort();
 
   return (
@@ -275,19 +314,27 @@ function WorkersTab({ api, user }) {
       <table className="table">
         <thead>
           <tr>
-            <th>ID</th>
-            <th>Worker</th>
-            <th>Schedule</th>
-            <th>Today</th>
-            <th>Punch pattern</th>
+            {th('id', 'ID')}
+            {th('worker', 'Worker')}
+            {th('schedule', 'Schedule')}
+            {th('today', 'Today')}
+            {th('pattern', 'Punch pattern')}
             {canEdit && <th />}
           </tr>
         </thead>
         <tbody>
-          {visible.map((w) => (
+          {pageWorkers.map((w) => (
             <tr key={w.id}>
               <td className="mono small">{w.biostarUserId}</td>
-              <td>{w.name}{w.status !== 'active' && <span className="chip">inactive</span>}</td>
+              <td>
+                {w.name}
+                {w.status !== 'active' && <span className="chip">inactive</span>}
+                {w.account && (
+                  <span className={`chip ${w.account.role === 'supervisor' ? 'chip--info' : ''}`} title={w.account.active ? 'Has a portal account' : 'Portal account disabled'}>
+                    {w.account.role === 'supervisor' ? 'Supervisor' : 'Portal account'}{w.account.active ? '' : ' (disabled)'}
+                  </span>
+                )}
+              </td>
               <td>
                 {editing === w.id ? (
                   <ScheduleEditor api={api} worker={w} crews={crews} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
@@ -316,6 +363,7 @@ function WorkersTab({ api, user }) {
         </tbody>
       </table>
       {visible.length === 0 && <div className="empty">No workers match.</div>}
+      {pager}
     </>
   );
 }
@@ -327,6 +375,14 @@ function ReviewTab({ api }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [effectiveFrom, setEffectiveFrom] = useState(todayEat());
+  const [pending, setPending] = useState(null); // { item, decision } while HR decides about a supervisor
+  const { sorted: sortedItems, th, sortKey } = useSort(items, {
+    worker: (i) => i.name,
+    current: (i) => i.current,
+    suggested: (i) => i.suggested,
+    evidence: { get: (i) => i.confidence, first: 'desc' }
+  });
+  const { pageItems: pageReview, pager } = usePagination(sortedItems, { id: 'pattern-review', defaultSize: 25, noun: 'workers', resetKey: sortKey });
 
   const load = useCallback(() => {
     setLoading(true);
@@ -338,13 +394,16 @@ function ReviewTab({ api }) {
 
   useEffect(() => { load(); }, [load]);
 
-  async function act(item, action) {
+  async function act(item, action, supervisorAction) {
     setError('');
     try {
-      await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom } });
+      await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom, supervisorAction } });
+      setPending(null);
       setItems((list) => list.filter((i) => i.workerId !== item.workerId));
     } catch (err) {
-      setError(err.message);
+      // Accepting would move a supervisor off their crew — ask first.
+      if (err.data?.decision) setPending({ item, decision: err.data.decision });
+      else setError(err.message);
     }
   }
 
@@ -360,19 +419,26 @@ function ReviewTab({ api }) {
         <label className="field">Apply accepted changes from<input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></label>
       </div>
       {error && <div className="error">{error}</div>}
+      {pending && (
+        <SupervisorDecision
+          decision={pending.decision}
+          onChoose={(choice) => act(pending.item, 'accept', choice)}
+          onCancel={() => setPending(null)}
+        />
+      )}
       {loading ? <div className="empty">Loading…</div> : items.length === 0 ? <div className="empty">Nothing to review.</div> : (
         <table className="table">
           <thead>
             <tr>
-              <th>Worker</th>
-              <th>Currently</th>
-              <th>Punches fit</th>
-              <th>Evidence</th>
+              {th('worker', 'Worker')}
+              {th('current', 'Currently')}
+              {th('suggested', 'Punches fit')}
+              {th('evidence', 'Evidence', { title: 'Sort by how clearly the punches fit (margin over the next best)' })}
               <th />
             </tr>
           </thead>
           <tbody>
-            {items.map((i) => (
+            {pageReview.map((i) => (
               <tr key={i.workerId}>
                 <td>{i.name}<div className="small muted mono">{i.biostarUserId}</div></td>
                 <td>{i.current}</td>
@@ -393,6 +459,7 @@ function ReviewTab({ api }) {
           </tbody>
         </table>
       )}
+      {!loading && pager}
     </>
   );
 }
@@ -421,6 +488,12 @@ function ExceptionsTab({ api }) {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState('');
+  const { sorted: sortedExceptions, th, sortKey } = useSort(exceptions, {
+    date: (ex) => ex.date,
+    worker: (ex) => ex.worker.name,
+    works: (ex) => describeException(ex.shifts)
+  });
+  const { pageItems: pageExceptions, pager } = usePagination(sortedExceptions, { id: 'exceptions', defaultSize: 25, noun: 'exceptions', resetKey: sortKey });
 
   const load = useCallback(() => {
     api('/api/exceptions').then((d) => setExceptions(d.exceptions)).catch((err) => setError(err.message));
@@ -491,10 +564,10 @@ function ExceptionsTab({ api }) {
       {exceptions.length === 0 ? <div className="empty">No exceptions in the last two weeks or the coming month.</div> : (
         <table className="table">
           <thead>
-            <tr><th>Date</th><th>Worker</th><th>Works</th><th>Note</th><th /></tr>
+            <tr>{th('date', 'Date')}{th('worker', 'Worker')}{th('works', 'Works')}<th>Note</th><th /></tr>
           </thead>
           <tbody>
-            {exceptions.map((ex) => (
+            {pageExceptions.map((ex) => (
               <tr key={ex.id}>
                 <td className="mono small">{formatDateLabel(ex.date)}</td>
                 <td>{ex.worker.name}<div className="small muted mono">{ex.worker.biostarUserId}</div></td>
@@ -506,6 +579,7 @@ function ExceptionsTab({ api }) {
           </tbody>
         </table>
       )}
+      {pager}
     </>
   );
 }

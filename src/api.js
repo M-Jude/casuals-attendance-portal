@@ -1,3 +1,12 @@
+// When the server answers without its usual { error } message. A bare 404
+// means the API doesn't have that endpoint — almost always a server still
+// running an older version after an update.
+function fallbackMessage(status) {
+  if (status === 404) return 'The server doesn’t have this feature yet — the portal API needs restarting after the latest update.';
+  if (status === 502 || status === 503 || status === 504) return 'Can’t reach the portal server right now. Try again in a moment.';
+  return `Something went wrong on the server (error ${status}). Try again.`;
+}
+
 // JSON fetch helper bound to the signed-in user's token. A 401 means the
 // session is over (expired, or the account was disabled) — sign out.
 export function makeApi(token, onUnauthorized) {
@@ -15,7 +24,9 @@ export function makeApi(token, onUnauthorized) {
       throw new Error('Your session has ended. Sign in again.');
     }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Request failed.');
+    // The response body rides along (err.data) — e.g. a 409 asking which way
+    // to go when a supervisor's worker record is moved.
+    if (!res.ok) throw Object.assign(new Error(data.error || fallbackMessage(res.status)), { status: res.status, data });
     return data;
   };
 }

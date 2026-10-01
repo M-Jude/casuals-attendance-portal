@@ -1,0 +1,23 @@
+{
+  "name": "UCAA-Ark Group Casuals",
+  "short_name": "Casuals",
+  "description": "Casual workers' attendance, approvals, schedules and reports.",
+  "id": "/",
+  "start_url": "/?page=attendance",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#E6EBF0",
+  "theme_color": "#213140",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Attendance", "url": "/?page=attendance", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Approvals", "url": "/?page=approvals", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Reports", "url": "/?page=reports", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

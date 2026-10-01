@@ -13,7 +13,7 @@
 
 const prisma = require('../prismaClient');
 const { addDaysStr, eatDateStr, eatToUtcMs } = require('../sync/shiftEngine');
-const { profileWorker, normaliseAnchor, sameRotation } = require('../sync/patternProfiler');
+const { profileWorker, profileWithCrews, candidateSchedules, normaliseAnchor, sameRotation } = require('../sync/patternProfiler');
 const { runProfiling } = require('../sync/profilingJob');
 const { computeSummaries } = require('../sync/computeDailySummaries');
 
@@ -50,7 +50,11 @@ async function main() {
 
   // Telling crews apart needs a few full cycles of punches. The regular sync
   // only keeps SYNC_LOOKBACK_DAYS (14) — backfill first if history is short.
-  const daysWithPunches = new Set(punches.map((p) => eatDateStr(p.timestamp.getTime()))).size;
+  const punchDates = [...new Set(punches.map((p) => eatDateStr(p.timestamp.getTime())))].sort();
+  const daysWithPunches = punchDates.length;
+  // Schedules start where the punch history does — starting them earlier
+  // would mark every scheduled shift before it a no-show.
+  const scheduleFrom = punchDates.find((d) => d >= fromDate) || fromDate;
   if (daysWithPunches < Math.min(21, DAYS)) {
     console.warn(`Only ${daysWithPunches} day(s) in this window have punches — too little to detect crews reliably.`);
     console.warn(`Backfill first:  SYNC_LOOKBACK_DAYS=${DAYS + 7} npm run sync   (then re-run this script)\n`);
@@ -93,12 +97,18 @@ async function main() {
     fixedNight.length = 0;
     for (const w of retry) {
       if (placed.has(w.id) || fixedDayIds.has(w.id)) continue;
-      const { suggestion } = profileWorker({ punches: byWorker.get(w.id), shiftsByName, fromDate, toDate, now, candidates: crewCandidates });
+      const { suggestion } = profileWithCrews({
+        punches: byWorker.get(w.id), shiftsByName, fromDate, toDate, now, crewCandidates, allCandidates: candidateSchedules(fromDate)
+      });
       const s = suggestion?.schedule;
       if (!s) unclear.push(w);
       else if (s.type === 'fixed-day') fixedDay.push(w);
       else if (s.type === 'fixed-night') fixedNight.push(w);
-      else crewGroups.find((g) => g.anchorDate === s.anchorDate && g.pattern === s.pattern).members.push(w);
+      else {
+        const group = crewGroups.find((g) => sameRotation(g, s, toDate));
+        if (group) group.members.push(w);
+        else strays.push(w); // fits a rotation no detected crew is on
+      }
     }
   }
 
@@ -142,14 +152,14 @@ async function main() {
         data: {
           name: g.name,
           subcontractorName: g.members[0].subcontractorName,
-          rotations: { create: { pattern: g.pattern, anchorDate: dateOnly(g.anchorDate), effectiveFrom: dateOnly(fromDate), note: 'Detected by bootstrapSchedules' } }
+          rotations: { create: { pattern: g.pattern, anchorDate: dateOnly(g.anchorDate), effectiveFrom: dateOnly(scheduleFrom), note: 'Detected by bootstrapSchedules' } }
         }
       });
     }
     for (const w of g.members) {
       if (w.schedules.length) continue; // already has a schedule — don't override a human decision
       await prisma.workerSchedule.create({
-        data: { casualWorkerId: w.id, effectiveFrom: dateOnly(fromDate), type: 'crew', crewId: g.crew.id, note: 'Detected by bootstrapSchedules' }
+        data: { casualWorkerId: w.id, effectiveFrom: dateOnly(scheduleFrom), type: 'crew', crewId: g.crew.id, note: 'Detected by bootstrapSchedules' }
       });
       assigned++;
     }
@@ -159,7 +169,7 @@ async function main() {
   // Fill in everyone's pattern profile for HR's review (without emailing —
   // this is setup, not news), then rebuild attendance on the new schedules.
   await runProfiling({ now, days: DAYS, notify: false });
-  await computeSummaries(fromDate, eatDateStr(now));
+  await computeSummaries(scheduleFrom, eatDateStr(now));
 
   await prisma.$disconnect();
 }

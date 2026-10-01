@@ -1,17 +1,18 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { STATUS_LABEL } from './shiftStatus';
 import { STATUS_ORDER, computeAnalytics, pct } from './attendanceStats';
+import { useSort } from './useSort';
 
 // Same palette as the status pills in AttendanceDashboard.jsx's .status--*
 // classes, named by status instead of by intent so the two can't drift.
 const STATUS_COLOR = {
-  'on-time': '#3E8E7E',
-  early: '#5B8DC9',
-  late: '#C9A227',
-  'no-checkout': '#8A99AC',
-  'no-checkin': '#A9B6C5',
-  'no-show': '#C9535A',
-  'in-progress': '#2E4E77'
+  'on-time': '#0F8A76',
+  early: '#3B7DD8',
+  late: '#E0A21B',
+  'no-checkout': '#94A3B8',
+  'no-checkin': '#CBD5E1',
+  'no-show': '#D9534F',
+  'in-progress': '#8B5CF6'
 };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -49,8 +50,8 @@ function DailyChart({ days }) {
         const y = base - g * plotH;
         return (
           <g key={g}>
-            <line x1={padLeft} y1={y} x2={W - 4} y2={y} stroke={g === 0 ? '#3A4A61' : '#1B2A40'} strokeWidth="1" />
-            <text x={padLeft - 6} y={y + 3} fontSize="10" fill="#66768A" textAnchor="end">{Math.round(g * max)}</text>
+            <line x1={padLeft} y1={y} x2={W - 4} y2={y} stroke={g === 0 ? '#CBD5E1' : '#EEF1F5'} strokeWidth="1" />
+            <text x={padLeft - 6} y={y + 3} fontSize="10" fill="#8795A8" textAnchor="end">{Math.round(g * max)}</text>
           </g>
         );
       })}
@@ -74,10 +75,10 @@ function DailyChart({ days }) {
           <g key={dateStr}>
             {segments}
             {slot > 14 && total > 0 && (
-              <text x={x + barW / 2} y={y - 4} fontSize="10" fill="#C7D2DF" textAnchor="middle">{total}</text>
+              <text x={x + barW / 2} y={y - 4} fontSize="10" fill="#334155" textAnchor="middle">{total}</text>
             )}
             {i % labelEvery === 0 && (
-              <text x={x + barW / 2} y={base + 16} fontSize="10" fill="#8A99AC" textAnchor="middle">
+              <text x={x + barW / 2} y={base + 16} fontSize="10" fill="#5B6B80" textAnchor="middle">
                 {shortDate(dateStr)}
               </text>
             )}
@@ -88,16 +89,56 @@ function DailyChart({ days }) {
   );
 }
 
+// A collapsible panel: closed by default, with a one-line summary in the
+// header so the key numbers are visible without opening it.
+function Panel({ id, title, hint, summary, open, onToggle, children }) {
+  return (
+    <div className={`an__panel ${open ? 'an__panel--open' : ''}`}>
+      <button type="button" className="an__panel-head" onClick={() => onToggle(id)} aria-expanded={open} aria-controls={`an-panel-${id}`}>
+        <span className="an__panel-chevron" aria-hidden="true">▸</span>
+        <span className="an__panel-title">{title}</span>
+        {hint && <span className="an__panel-hint">{hint}</span>}
+        {!open && summary && <span className="an__panel-summary">{summary}</span>}
+      </button>
+      {open && <div className="an__panel-body" id={`an-panel-${id}`}>{children}</div>}
+    </div>
+  );
+}
+
 export default function AttendanceAnalytics({ rows }) {
   const stats = useMemo(() => computeAnalytics(rows), [rows]);
+  const [openPanels, setOpenPanels] = useState(() => new Set()); // all collapsed to start
+  // Workers needing attention: top 10 by issues, then sortable by any count.
+  const { sorted: attention, th } = useSort(useMemo(() => stats.attention.slice(0, 10), [stats]), {
+    worker: (w) => w.worker.name,
+    late: { get: (w) => w.late, first: 'desc' },
+    noCheckout: { get: (w) => w.noCheckout, first: 'desc' },
+    noShow: { get: (w) => w.noShow, first: 'desc' },
+    earlyOut: { get: (w) => w.earlyOut, first: 'desc' },
+    shifts: { get: (w) => w.shifts, first: 'desc' }
+  });
   if (rows.length === 0) return null;
+
+  function togglePanel(id) {
+    setOpenPanels((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const busiest = stats.days.reduce((best, [d, c]) => {
+    const n = STATUS_ORDER.reduce((a, s) => a + c[s], 0);
+    return !best || n > best.n ? { d, n } : best;
+  }, null);
 
   const punctuality = stats.completed ? `${pct(stats.punctual, stats.completed)}%` : '—';
   const cards = [
-    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'}`, accent: '#5B8DC9' },
-    { label: 'WORKERS', value: String(stats.workers), sub: 'with attendance in range', accent: '#5B8DC9' },
-    { label: 'COMPLETED SHIFTS', value: String(stats.completed), sub: `${pct(stats.completed, stats.total)}% have in + out`, accent: '#3E8E7E' },
-    { label: 'HOURS WORKED', value: stats.hoursTotal.toFixed(1), sub: stats.completed ? `avg ${stats.hoursAvg.toFixed(1)} h / shift` : 'no completed shifts', accent: '#3E8E7E' },
+    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'} · ${stats.doubleShifts} double shift${stats.doubleShifts === 1 ? '' : 's'}`, accent: '#3B7DD8' },
+    { label: 'WORKERS', value: String(stats.workers), sub: 'with attendance in range', accent: '#3B7DD8' },
+    { label: 'COMPLETED SHIFTS', value: String(stats.completed), sub: `${pct(stats.completed, stats.total)}% have in + out`, accent: '#0F8A76' },
+    { label: 'HOURS WORKED', value: stats.hoursTotal.toFixed(1), sub: stats.completed ? `avg ${stats.hoursAvg.toFixed(1)} h / shift` : 'no completed shifts', accent: '#0F8A76' },
     { label: 'PUNCTUALITY', value: punctuality, sub: `${stats.punctual} of ${stats.completed} completed shifts`, accent: STATUS_COLOR['on-time'] },
     { label: 'LATE ARRIVALS', value: String(stats.counts.late), sub: `${pct(stats.counts.late, stats.total)}% of records`, accent: STATUS_COLOR.late },
     { label: 'NO CHECKOUT', value: String(stats.counts['no-checkout']), sub: `${pct(stats.counts['no-checkout'], stats.total)}% of records`, accent: STATUS_COLOR['no-checkout'] },
@@ -118,9 +159,15 @@ export default function AttendanceAnalytics({ rows }) {
         ))}
       </div>
 
-      <div className="an__section">
-        <div className="an__section-title">Attendance breakdown <span>by status</span></div>
-
+      <div className="an__panels">
+      <Panel
+        id="breakdown"
+        title="Attendance breakdown"
+        hint="by status"
+        summary={`${stats.counts['on-time'] + stats.counts.early} on time or early · ${stats.counts.late} late · ${stats.counts['no-show']} no-show${stats.counts['in-progress'] ? ` · ${stats.counts['in-progress']} in progress` : ''}`}
+        open={openPanels.has('breakdown')}
+        onToggle={togglePanel}
+      >
         <div className="an__stackbar">
           {STATUS_ORDER.map((s) => {
             const width = pct(stats.counts[s], stats.total);
@@ -155,35 +202,45 @@ export default function AttendanceAnalytics({ rows }) {
         <div className="an__meta">
           {shiftBits.join('  ·  ')}
           {shiftBits.length > 0 && '  ·  '}
-          Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Unscheduled: {stats.unscheduled}  ·  Not yet approved: {stats.unapproved}
+          Double shifts: {stats.doubleShifts}  ·  Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Unscheduled: {stats.unscheduled}  ·  Not yet approved: {stats.unapproved}
         </div>
-      </div>
+      </Panel>
 
       {stats.days.length > 0 && stats.days.length <= MAX_CHART_DAYS && (
-        <div className="an__section">
-          <div className="an__section-title">Records per day <span>stacked by status</span></div>
+        <Panel
+          id="per-day"
+          title="Records per day"
+          hint="stacked by status"
+          summary={`${stats.days.length} day${stats.days.length === 1 ? '' : 's'}${busiest ? ` · busiest ${shortDate(busiest.d)} (${busiest.n})` : ''}`}
+          open={openPanels.has('per-day')}
+          onToggle={togglePanel}
+        >
           <DailyChart days={stats.days} />
-        </div>
+        </Panel>
       )}
 
       {stats.attention.length > 0 && (
-        <div className="an__section">
-          <div className="an__section-title">
-            Workers needing attention <span>top {Math.min(10, stats.attention.length)} by late arrivals, no checkouts and no-shows</span>
-          </div>
+        <Panel
+          id="attention"
+          title="Workers needing attention"
+          hint={`top ${Math.min(10, stats.attention.length)} by late arrivals, no checkouts and no-shows`}
+          summary={`${stats.attention.length} worker${stats.attention.length === 1 ? '' : 's'} with issues · most: ${stats.attention[0].worker.name}`}
+          open={openPanels.has('attention')}
+          onToggle={togglePanel}
+        >
           <table className="an__attn-table">
             <thead>
               <tr>
-                <th>Worker</th>
-                <th>Late</th>
-                <th>No checkout</th>
-                <th>No-show</th>
-                <th>Early out</th>
-                <th>Shifts</th>
+                {th('worker', 'Worker')}
+                {th('late', 'Late', { align: 'center' })}
+                {th('noCheckout', 'No checkout', { align: 'center' })}
+                {th('noShow', 'No-show', { align: 'center' })}
+                {th('earlyOut', 'Early out', { align: 'center' })}
+                {th('shifts', 'Shifts', { align: 'center' })}
               </tr>
             </thead>
             <tbody>
-              {stats.attention.slice(0, 10).map((w) => (
+              {attention.map((w) => (
                 <tr key={w.worker.id}>
                   <td>
                     <div className="an__attn-name">{w.worker.name}</div>
@@ -198,10 +255,39 @@ export default function AttendanceAnalytics({ rows }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </Panel>
       )}
+      </div>
 
       <style>{`
+        .an__panels { display: flex; flex-direction: column; gap: 12px; }
+        .an__panel {
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: var(--radius);
+          box-shadow: var(--shadow);
+          overflow: hidden;
+        }
+        .an__panel-head {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+          padding: 14px 18px;
+          background: none;
+          border: none;
+          color: var(--text);
+          text-align: left;
+          cursor: pointer;
+        }
+        .an__panel-head:hover { background: var(--hover); }
+        .an__panel-chevron { color: var(--accent); font-size: 12px; transition: transform 0.15s ease; }
+        .an__panel--open .an__panel-chevron { transform: rotate(90deg); }
+        .an__panel-title { font-size: 14.5px; font-weight: 600; }
+        .an__panel-hint { font-size: 12.5px; color: var(--faint); }
+        .an__panel-summary { margin-left: auto; font-size: 13px; color: var(--muted); }
+        .an__panel-body { padding: 4px 20px 20px; border-top: 1px solid var(--line-soft); padding-top: 18px; }
         .an__cards {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
@@ -209,26 +295,29 @@ export default function AttendanceAnalytics({ rows }) {
           margin-bottom: 22px;
         }
         .an__card {
-          background: #16243A;
-          border: 1px solid #24354F;
-          border-left: 3px solid var(--accent, #3E8E7E);
-          padding: 12px 14px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-top: 3px solid var(--accent, #0F8A76);
+          border-radius: var(--radius);
+          box-shadow: var(--shadow);
+          padding: 14px 16px;
         }
         .an__card-label {
           font-size: 10px;
           font-weight: 600;
           letter-spacing: 0.06em;
-          color: #66768A;
+          color: var(--faint);
         }
         .an__card-value {
-          font-size: 22px;
+          font-size: 24px;
           font-weight: 700;
-          color: #E8EDF2;
+          letter-spacing: -0.01em;
+          color: var(--text);
           margin-top: 4px;
         }
         .an__card-sub {
           font-size: 11px;
-          color: #8A99AC;
+          color: var(--muted);
           margin-top: 4px;
         }
         .an__section {
@@ -237,15 +326,15 @@ export default function AttendanceAnalytics({ rows }) {
         .an__section-title {
           font-size: 13px;
           font-weight: 600;
-          color: #E8EDF2;
-          border-left: 3px solid #3E8E7E;
+          color: var(--text);
+          border-left: 3px solid var(--accent);
           padding-left: 9px;
           margin-bottom: 12px;
         }
         .an__section-title span {
           font-weight: 400;
           font-size: 11px;
-          color: #66768A;
+          color: var(--faint);
           margin-left: 6px;
         }
         .an__stackbar {
@@ -261,7 +350,7 @@ export default function AttendanceAnalytics({ rows }) {
           justify-content: center;
           font-size: 10px;
           font-weight: 600;
-          color: #0F1B2C;
+          color: var(--on-accent);
           white-space: nowrap;
         }
         .an__legend {
@@ -284,7 +373,7 @@ export default function AttendanceAnalytics({ rows }) {
         }
         .an__legend-label {
           font-size: 11px;
-          color: #8A99AC;
+          color: var(--muted);
         }
         .an__legend-value {
           font-size: 15px;
@@ -293,12 +382,12 @@ export default function AttendanceAnalytics({ rows }) {
         .an__legend-value span {
           font-size: 10px;
           font-weight: 400;
-          color: #66768A;
+          color: var(--faint);
           margin-left: 3px;
         }
         .an__meta {
           font-size: 11px;
-          color: #66768A;
+          color: var(--faint);
         }
         .an__chart-svg {
           width: 100%;
@@ -314,24 +403,24 @@ export default function AttendanceAnalytics({ rows }) {
           text-align: left;
           font-size: 11px;
           font-weight: 500;
-          color: #8A99AC;
+          color: var(--muted);
           padding: 0 10px 8px;
-          border-bottom: 1px solid #24354F;
+          border-bottom: 1px solid var(--line);
         }
         .an__attn-table th:not(:first-child), .an__attn-table td:not(:first-child) {
           text-align: center;
         }
         .an__attn-table td {
           padding: 9px 10px;
-          border-bottom: 1px solid #1B2A40;
+          border-bottom: 1px solid var(--line-soft);
         }
         .an__attn-name {
           font-weight: 600;
-          color: #E8EDF2;
+          color: var(--text);
         }
         .an__attn-id {
           font-size: 11px;
-          color: #66768A;
+          color: var(--faint);
         }
 
         @media (max-width: 900px) {

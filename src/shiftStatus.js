@@ -28,3 +28,26 @@ export function statusClassName(status) {
     default: return 'ok';
   }
 }
+
+// The Status column shows only these two: a late check-in and/or an early
+// check-out. Everything else (on time, early arrival, no-show, missing
+// punch, in progress) leaves it blank. Mirrors statusTags() in
+// reports/reportCatalog.js.
+export const TAG_LABEL = { 'late-in': 'Late in', 'early-out': 'Early out' };
+
+export function statusTags(row) {
+  if (!row) return [];
+  const tags = [];
+  if (row.status === 'late' || row.lateIn) tags.push('late-in');
+  if (row.earlyCheckOut) tags.push('early-out');
+  return tags;
+}
+
+// A shift with no schedule and only one badge: which shift it belongs to was
+// guessed (from the worker's own pattern, or failing that the clock time).
+// Mirrors isGuessed() in reports/reportCatalog.js.
+export function isGuessed(row) {
+  return row?.source === 'unscheduled' && (!row.checkIn || !row.checkOut);
+}
+export const GUESSED_TITLE = 'Only one badge and no schedule for this date — the shift was guessed from the worker’s usual pattern (or the time of day). Check it, and record an exception if it’s wrong.';
+
