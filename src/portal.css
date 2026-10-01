@@ -1,0 +1,333 @@
+/* Shared styles for the portal shell and the management pages (Approvals,
+   Schedules, Shift rules, Users). The attendance dashboard keeps its own
+   component-scoped styles; this uses the same palette. */
+
+:root {
+  --bg: #0F1B2C;
+  --panel: #16243A;
+  --panel-2: #1B2A40;
+  --line: #24354F;
+  --line-soft: #1B2A40;
+  --text: #E8EDF2;
+  --muted: #8A99AC;
+  --faint: #66768A;
+  --accent: #3E8E7E;
+  --accent-hover: #4EA391;
+  --warn: #C9A227;
+  --critical: #C9535A;
+  --info: #5B8DC9;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+.shell {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+.shell__bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 40px;
+  border-bottom: 1px solid var(--line);
+  min-height: 56px;
+  flex-wrap: wrap;
+}
+.shell__title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin: 0;
+  white-space: nowrap;
+}
+.shell__nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.shell__nav button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 18px 12px 16px;
+  cursor: pointer;
+}
+.shell__nav button:hover { color: var(--text); }
+.shell__nav button[aria-current='page'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.shell__nav-count {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--warn);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.shell__user {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.shell__user strong { color: var(--text); font-weight: 500; }
+.shell__signout {
+  border: none;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.shell__signout:hover { color: var(--text); }
+
+.page {
+  padding: 28px 40px 48px;
+  box-sizing: border-box;
+}
+.page__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.page__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.page__hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+  max-width: 760px;
+  line-height: 1.5;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.tabs button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--accent); }
+
+.btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { background: var(--panel); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn--primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn--danger { border-color: #7A3236; color: var(--critical); }
+.btn--small { padding: 4px 10px; font-size: 12px; }
+.btn--link { border: none; padding: 0; color: var(--accent); background: none; }
+.btn--link:hover:not(:disabled) { background: none; text-decoration: underline; }
+
+.form-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.field input, .field select, .field textarea, .input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+}
+.field textarea, textarea.input { font-family: inherit; resize: vertical; }
+.field--grow { flex: 1; min-width: 200px; }
+.checkbox { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+
+.card {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 16px 18px;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.card__title { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.card__sub { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.card__row { font-size: 13px; color: var(--muted); margin: 6px 0; }
+.card__row strong { color: var(--text); font-weight: 500; }
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+.table tr.is-clickable { cursor: pointer; }
+.table tr.is-clickable:hover td { background: var(--panel); }
+.mono { font-family: 'IBM Plex Mono', monospace; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+
+.chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  margin: 0 4px 2px 0;
+  white-space: nowrap;
+}
+.chip--ok { color: var(--accent); border-color: #2A5F53; }
+.chip--warn { color: var(--warn); border-color: #8A6E1B; }
+.chip--critical { color: var(--critical); border-color: #7A3236; }
+.chip--info { color: var(--info); border-color: #2E4E77; }
+.chip--day { color: #E8C35A; border-color: #6B5A22; }
+.chip--night { color: #8FA8E0; border-color: #33497A; }
+
+.notice {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  background: var(--panel-2);
+  padding: 12px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.notice--info { border-left-color: var(--info); }
+.error { color: var(--warn); font-size: 13px; margin: 8px 0; }
+.success { color: var(--accent); font-size: 13px; margin: 8px 0; }
+.empty { color: var(--muted); font-size: 14px; padding: 36px 0; text-align: center; }
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 18px;
+  margin-bottom: 20px;
+}
+.panel__title { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+
+.bell { position: relative; }
+.bell__button {
+  position: relative;
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.bell__button:hover { color: var(--text); }
+.bell__badge {
+  margin-left: 6px;
+  background: var(--warn);
+  color: var(--bg);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-weight: 700;
+  font-size: 10px;
+}
+.bell__panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 380px;
+  max-height: 480px;
+  overflow: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 50;
+}
+.bell__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.bell__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.bell__item:hover { background: var(--panel); }
+.bell__item--unread { box-shadow: inset 3px 0 0 var(--warn); }
+.bell__item-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.bell__item-body { font-size: 12px; color: var(--muted); white-space: pre-wrap; line-height: 1.45; max-height: 7.2em; overflow: hidden; }
+.bell__item-time { font-size: 11px; color: var(--faint); margin-top: 6px; }
+
+@media (max-width: 640px) {
+  .shell__bar { padding: 8px 16px; gap: 8px; }
+  .page { padding: 20px 16px 40px; }
+  .bell__panel { width: calc(100vw - 32px); right: -60px; }
+  .table { display: block; overflow-x: auto; }
+}

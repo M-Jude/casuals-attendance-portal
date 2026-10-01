@@ -1,0 +1,46 @@
+name: CI/CD
+
+# - Pull requests into master: run tests and build (no deploy).
+# - Merge/push to master: run the same checks, then deploy to the Windows
+#   Server VM via the self-hosted runner installed there.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    name: Deploy to Windows Server
+    needs: test
+    # Only deploy code that has actually landed on master — never PR code.
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Windows, casuals-portal]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        shell: powershell
+        run: .\deploy\windows\deploy.ps1 -Source "$env:GITHUB_WORKSPACE"

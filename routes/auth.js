@@ -1,7 +1,8 @@
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../prismaClient');
+const authenticate = require('../middleware/authenticate');
 
 const router = express.Router();
 
@@ -36,8 +37,8 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    const user = await prisma.portalUser.findUnique({ where: { email } });
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
+    if (!user || !user.active) return res.status(401).json({ error: 'Invalid credentials' });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
@@ -53,6 +54,13 @@ router.post('/login', async (req, res) => {
     console.error('Login failed:', err);
     res.status(500).json({ error: 'Login is temporarily unavailable. Try again shortly.' });
   }
+});
+
+// The signed-in account — the frontend uses this to decide which pages and
+// actions to show (the API enforces the same rules server-side).
+router.get('/me', authenticate, async (req, res) => {
+  const crew = req.user.crewId ? await prisma.crew.findUnique({ where: { id: req.user.crewId } }) : null;
+  res.json({ user: { ...req.user, crewName: crew ? crew.name : null } });
 });
 
 module.exports = router;

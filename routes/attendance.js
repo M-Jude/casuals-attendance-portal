@@ -1,8 +1,9 @@
 const express = require('express');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
+const { requireRole } = require('../middleware/requireRole');
 const { syncAttendance } = require('../sync/attendanceSync');
-const { computeSummaries } = require('../sync/computeDailySummaries');
+const { recomputeLookback } = require('../services/recompute');
 
 const router = express.Router();
 
@@ -14,7 +15,7 @@ const DEFAULT_PAGE_SIZE = 200;
 // corrupt anything, just waste a redundant BioStar round trip.
 let syncInProgress = false;
 
-router.post('/attendance/sync', authenticate, async (req, res) => {
+router.post('/attendance/sync', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'supervisor'), async (req, res) => {
   if (syncInProgress) {
     return res.status(409).json({ error: 'A sync is already in progress. Try again shortly.' });
   }
@@ -22,12 +23,7 @@ router.post('/attendance/sync', authenticate, async (req, res) => {
   syncInProgress = true;
   try {
     await syncAttendance();
-
-    const lookback = parseInt(process.env.SYNC_LOOKBACK_DAYS, 10) || 14;
-    const today = new Date().toISOString().slice(0, 10);
-    const from = new Date();
-    from.setDate(from.getDate() - lookback);
-    await computeSummaries(from.toISOString().slice(0, 10), today);
+    await recomputeLookback();
 
     res.json({ success: true });
   } catch (err) {
@@ -38,7 +34,8 @@ router.post('/attendance/sync', authenticate, async (req, res) => {
   }
 });
 
-router.get('/attendance', authenticate, async (req, res) => {
+// Raw punches — an audit view, not something Finance or supervisors need.
+router.get('/attendance', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant'), async (req, res) => {
   const { from, to } = req.query; // optional date range filter, YYYY-MM-DD
   const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);

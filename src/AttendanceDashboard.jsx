@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
+import AttendanceAnalytics from './AttendanceAnalytics';
+import { STATUS_LABEL, STATUS_RANK, statusClassName } from './shiftStatus';
+import { downloadAuthenticated } from './downloadFile';
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -24,13 +27,13 @@ function formatDate(dateStr) {
   });
 }
 
-const STATUS_LABEL = {
-  'on-time': 'On time',
-  late: 'Late',
-  'no-checkout': 'No checkout'
-};
-
-const STATUS_RANK = { late: 0, 'no-checkout': 1, 'on-time': 2 };
+function approvalState(row) {
+  if (row.changedAfterApproval) {
+    return { key: 'changed', label: 'Changed', title: 'Changed after approval — the approved values stand until re-approved' };
+  }
+  if (row.approvedAt) return { key: 'approved', label: 'Approved', title: `Approved ${new Date(row.approvedAt).toLocaleString()}` };
+  return { key: 'pending', label: 'Waiting', title: 'Not yet approved' };
+}
 
 const SORT_OPTIONS = [
   { value: 'date-desc', label: 'Date (newest first)' },
@@ -110,8 +113,11 @@ function groupRows(rows, groupBy) {
   return list;
 }
 
-export default function AttendanceDashboard({ token, onLogout }) {
-  const [from, setFrom] = useState(daysAgoISO(7));
+export default function AttendanceDashboard({ token, user, onLogout }) {
+  // Defaults to just today + yesterday — a fast "what's happening now" view.
+  // Everything below (analytics, table, exports) is derived from from/to, so
+  // widening or narrowing this range cascades through all of it automatically.
+  const [from, setFrom] = useState(daysAgoISO(1));
   const [to, setTo] = useState(todayISO());
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -119,12 +125,16 @@ export default function AttendanceDashboard({ token, onLogout }) {
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const [filterId, setFilterId] = useState('');
   const [filterName, setFilterName] = useState('');
+  const [filterShift, setFilterShift] = useState('');
+  const [filterApproval, setFilterApproval] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
   const [groupBy, setGroupBy] = useState('date');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [analyticsOpen, setAnalyticsOpen] = useState(true);
 
   const loadSummaries = useCallback(async () => {
     setLoading(true);
@@ -187,21 +197,55 @@ export default function AttendanceDashboard({ token, onLogout }) {
     }
   }
 
-  function handleExport() {
+  async function handleExport() {
+    setError('');
     const params = new URLSearchParams({ from, to });
-    window.open(`/api/attendance/export?${params}`, '_blank');
+    try {
+      await downloadAuthenticated(`/api/attendance/export?${params}`, token, `casuals-attendance_${from}_to_${to}.csv`);
+    } catch (err) {
+      setError(err.message || 'Could not export CSV. Try again.');
+    }
+  }
+
+  // The PDF is built server-side over the whole date range (not just the 500
+  // rows the table loads), but takes the on-screen filters/sort/group so the
+  // report matches what's being looked at.
+  async function handleDownloadPdf() {
+    setError('');
+    setPdfBusy(true);
+    const params = new URLSearchParams({ from, to, sortBy, groupBy });
+    if (filterId.trim()) params.set('id', filterId.trim());
+    if (filterName.trim()) params.set('name', filterName.trim());
+    try {
+      await downloadAuthenticated(`/api/attendance/report.pdf?${params}`, token, `casuals-attendance-report_${from}_to_${to}.pdf`);
+    } catch (err) {
+      setError(err.message || 'Could not generate the PDF report. Try again.');
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
   const visibleRows = useMemo(() => {
     const idQuery = filterId.trim().toLowerCase();
     const nameQuery = filterName.trim().toLowerCase();
-    if (!idQuery && !nameQuery) return rows;
     return rows.filter(
       (r) =>
         (!idQuery || r.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
-        (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery))
+        (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery)) &&
+        (!filterShift || r.shift.name === filterShift) &&
+        (!filterApproval || approvalState(r).key === filterApproval)
     );
-  }, [rows, filterId, filterName]);
+  }, [rows, filterId, filterName, filterShift, filterApproval]);
+
+  // Worker+date pairs with both a Day and a Night row — a double shift.
+  const doubleShifts = useMemo(() => {
+    const seen = new Map();
+    for (const r of rows) {
+      const k = `${r.worker.id}|${r.date.slice(0, 10)}`;
+      seen.set(k, (seen.get(k) || 0) + 1);
+    }
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [rows]);
 
   const sortedRows = useMemo(() => sortRows(visibleRows, sortBy), [visibleRows, sortBy]);
   const groups = useMemo(() => groupRows(sortedRows, groupBy), [sortedRows, groupBy]);
@@ -223,6 +267,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   function renderRow(row) {
     const dateStr = row.date.slice(0, 10);
+    const approval = approvalState(row);
     return (
       <tr
         key={row.id}
@@ -234,19 +279,44 @@ export default function AttendanceDashboard({ token, onLogout }) {
         <td className="mono" data-label="Employee ID">{row.worker.biostarUserId}</td>
         <td data-label="Worker">{row.worker.name}</td>
         <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
-        <td data-label="Shift">{row.shift.name}</td>
-        <td className="mono" data-label="In">{formatTime(row.checkIn)}</td>
-        <td className="mono" data-label="Out">{formatTime(row.checkOut)}</td>
+        <td data-label="Shift">
+          {row.shift.name}
+          {doubleShifts.has(`${row.worker.id}|${dateStr}`) && <div className="dash__shift-note">double shift</div>}
+          {row.source === 'exception' && <div className="dash__shift-note">exception</div>}
+          {row.source === 'unscheduled' && (
+            <div className="dash__shift-note dash__shift-note--warn" title="Worked outside this worker's schedule — a supervisor can record an exception">unscheduled</div>
+          )}
+        </td>
+        <td className="mono" data-label="In">
+          {formatTime(row.checkIn)}{row.checkInImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+        </td>
+        <td className="mono" data-label="Out">
+          {formatTime(row.checkOut)}{row.checkOutImplied && <span title="No badge at the double-shift changeover — split at the scheduled time"> *</span>}
+        </td>
         <td className="mono" data-label="Hours">{row.hoursWorked ?? '—'}</td>
+        <td className="mono" data-label="Regular">{row.regularHours ?? '—'}</td>
         <td data-label="Status">
-          <span className={`status status--${row.status === 'no-checkout' ? 'pending' : row.status === 'late' ? 'late' : 'ok'}`}>
+          <span className={`status status--${statusClassName(row.status)}`}>
             {STATUS_LABEL[row.status] || row.status}
           </span>
+          {row.lateIn && row.status !== 'late' && (
+            <span className="status status--flag" title="Checked in after the late threshold">
+              ⚠ Late in
+            </span>
+          )}
+          {row.earlyCheckOut && (
+            <span className="status status--flag" title="Checked out well before the shift's scheduled end">
+              ⚠ Early checkout
+            </span>
+          )}
           {row.hasMultiplePunches && (
             <span className="status status--flag" title="More than one check-in or check-out was recorded — open for details">
               ⚠ Multiple punches
             </span>
           )}
+        </td>
+        <td data-label="Approval">
+          <span className={`approval approval--${approval.key}`} title={approval.title}>{approval.label}</span>
         </td>
       </tr>
     );
@@ -264,7 +334,9 @@ export default function AttendanceDashboard({ token, onLogout }) {
             <th>In</th>
             <th>Out</th>
             <th>Hours</th>
+            <th title="Hours inside the scheduled shift">Regular</th>
             <th>Status</th>
+            <th>Approval</th>
           </tr>
         </thead>
         <tbody>{rowsToRender.map(renderRow)}</tbody>
@@ -274,65 +346,99 @@ export default function AttendanceDashboard({ token, onLogout }) {
 
   return (
     <div className="dash">
-      <header className="dash__header">
-        <div className="dash__title">CASUALS ATTENDANCE</div>
-        <div className="dash__controls">
-          <label>
-            From
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            To
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </label>
-          <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Refresh'}
-          </button>
-          <button className="dash__export" onClick={handleExport}>Export CSV</button>
-          <button className="dash__signout" onClick={onLogout}>Sign out</button>
+      <div className="dash__controlbar">
+        <div className="dash__controlgroup">
+          <div className="dash__controlgroup-label">Period</div>
+          <div className="dash__controlgroup-row">
+            <label>
+              From
+              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            </label>
+            {user.role !== 'finance' && (
+              <button className="dash__refresh" onClick={handleRefresh} disabled={syncing}>
+                {syncing ? 'Syncing…' : 'Refresh'}
+              </button>
+            )}
+          </div>
         </div>
-      </header>
+
+        <div className="dash__controlgroup">
+          <div className="dash__controlgroup-label">Actions</div>
+          <div className="dash__controlgroup-row">
+            <button className="dash__export" onClick={handleExport}>Export CSV</button>
+            <button className="dash__pdf" onClick={handleDownloadPdf} disabled={pdfBusy}>
+              {pdfBusy ? 'Preparing PDF…' : 'Download PDF'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div className="dash__toolbar">
-        <label>
-          Employee ID
-          <input
-            type="text"
-            placeholder="Filter by ID…"
-            value={filterId}
-            onChange={(e) => setFilterId(e.target.value)}
-          />
-        </label>
-        <label>
-          Name
-          <input
-            type="text"
-            placeholder="Filter by name…"
-            value={filterName}
-            onChange={(e) => setFilterName(e.target.value)}
-          />
-        </label>
-        <label>
-          Sort by
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            {SORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Group by
-          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
-            {GROUP_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </label>
-        {isGrouped && groups.length > 0 && (
-          <button className="dash__toggle-all" onClick={toggleAllGroups}>
-            {allCollapsed ? 'Expand All' : 'Collapse All'}
-          </button>
-        )}
+        <div className="dash__toolbar-label">Filter &amp; organize</div>
+        <div className="dash__toolbar-row">
+          <label>
+            Employee ID
+            <input
+              type="text"
+              placeholder="Filter by ID…"
+              value={filterId}
+              onChange={(e) => setFilterId(e.target.value)}
+            />
+          </label>
+          <label>
+            Name
+            <input
+              type="text"
+              placeholder="Filter by name…"
+              value={filterName}
+              onChange={(e) => setFilterName(e.target.value)}
+            />
+          </label>
+          <label>
+            Shift
+            <select value={filterShift} onChange={(e) => setFilterShift(e.target.value)}>
+              <option value="">Both</option>
+              <option value="Day">Day</option>
+              <option value="Night">Night</option>
+            </select>
+          </label>
+          {user.role !== 'finance' && (
+            <label>
+              Approval
+              <select value={filterApproval} onChange={(e) => setFilterApproval(e.target.value)}>
+                <option value="">Any</option>
+                <option value="pending">Waiting</option>
+                <option value="approved">Approved</option>
+                <option value="changed">Changed after approval</option>
+              </select>
+            </label>
+          )}
+          <label>
+            Order by
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Group by
+            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+              {GROUP_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          {isGrouped && groups.length > 0 && (
+            <button className="dash__toggle-all" onClick={toggleAllGroups}>
+              {allCollapsed ? 'Expand All' : 'Collapse All'}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <div className="dash__error" role="alert">{error}</div>}
@@ -342,33 +448,59 @@ export default function AttendanceDashboard({ token, onLogout }) {
         </div>
       )}
 
-      {loading ? (
-        <div className="dash__empty">Loading attendance records…</div>
-      ) : sortedRows.length === 0 ? (
-        <div className="dash__empty">No attendance records match the current filters.</div>
-      ) : !isGrouped ? (
-        renderTable(sortedRows)
-      ) : (
-        <div className="dash__accordion">
-          {groups.map((group) => {
-            const collapsed = collapsedGroups.has(group.key);
-            return (
-              <div className="dash__group" key={group.key}>
-                <button
-                  className="dash__group-header"
-                  onClick={() => toggleGroup(group.key)}
-                  aria-expanded={!collapsed}
-                >
-                  <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
-                  <span className="dash__group-label">{group.label}</span>
-                  <span className="dash__group-count">{group.rows.length}</span>
-                </button>
-                {!collapsed && renderTable(group.rows)}
-              </div>
-            );
-          })}
-        </div>
+      {!loading && sortedRows.length > 0 && (
+        <section className="dash__section">
+          <button
+            className="dash__section-header"
+            onClick={() => setAnalyticsOpen((v) => !v)}
+            aria-expanded={analyticsOpen}
+          >
+            <span className={`dash__chevron ${analyticsOpen ? '' : 'dash__chevron--collapsed'}`}>▾</span>
+            <span className="dash__section-title">Overview</span>
+            <span className="dash__section-hint">at a glance for the selected period</span>
+          </button>
+          {analyticsOpen && <AttendanceAnalytics rows={sortedRows} />}
+        </section>
       )}
+
+      <section className="dash__section">
+        <div className="dash__section-title-static">
+          Detailed records
+          {!loading && (
+            <span className="dash__section-hint">
+              {sortedRows.length} record{sortedRows.length === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="dash__empty">Loading attendance records…</div>
+        ) : sortedRows.length === 0 ? (
+          <div className="dash__empty">No attendance records match the current filters.</div>
+        ) : !isGrouped ? (
+          renderTable(sortedRows)
+        ) : (
+          <div className="dash__accordion">
+            {groups.map((group) => {
+              const collapsed = collapsedGroups.has(group.key);
+              return (
+                <div className="dash__group" key={group.key}>
+                  <button
+                    className="dash__group-header"
+                    onClick={() => toggleGroup(group.key)}
+                    aria-expanded={!collapsed}
+                  >
+                    <span className={`dash__chevron ${collapsed ? 'dash__chevron--collapsed' : ''}`}>▾</span>
+                    <span className="dash__group-label">{group.label}</span>
+                    <span className="dash__group-count">{group.rows.length}</span>
+                  </button>
+                  {!collapsed && renderTable(group.rows)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {selectedRow && (
         <PunchHistoryModal
@@ -387,38 +519,46 @@ export default function AttendanceDashboard({ token, onLogout }) {
           padding: 32px 40px;
           box-sizing: border-box;
         }
-        .dash__header {
+        /* Control bar — two clearly separated clusters: "what period am I
+           looking at" (left) and "what can I do with it" (right). */
+        .dash__controlbar {
           display: flex;
           justify-content: space-between;
-          align-items: center;
+          align-items: flex-start;
           flex-wrap: wrap;
-          gap: 16px;
-          border-bottom: 1px solid #24354F;
+          gap: 24px;
           padding-bottom: 20px;
           margin-bottom: 20px;
+          border-bottom: 1px solid #1B2A40;
         }
-        .dash__title {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 14px;
-          letter-spacing: 0.06em;
-          color: #3E8E7E;
+        .dash__controlgroup {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
         }
-        .dash__controls {
+        .dash__controlgroup-label, .dash__toolbar-label {
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #66768A;
+        }
+        .dash__controlgroup-row, .dash__toolbar-row {
           display: flex;
           align-items: flex-end;
-          gap: 16px;
+          gap: 12px;
           flex-wrap: wrap;
         }
-        .dash__controls label, .dash__toolbar label {
+        .dash__controlgroup-row label, .dash__toolbar-row label {
           display: flex;
           flex-direction: column;
           font-size: 12px;
           color: #8A99AC;
           gap: 4px;
         }
-        .dash__controls input,
-        .dash__toolbar input,
-        .dash__toolbar select {
+        .dash__controlgroup-row input,
+        .dash__toolbar-row input,
+        .dash__toolbar-row select {
           background: #16243A;
           border: 1px solid #24354F;
           color: #E8EDF2;
@@ -426,16 +566,19 @@ export default function AttendanceDashboard({ token, onLogout }) {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 13px;
         }
+
+        /* View controls — filtering/sorting/grouping the data already
+           loaded for the period above; sits right against what it governs. */
         .dash__toolbar {
           display: flex;
-          align-items: flex-end;
-          gap: 16px;
-          flex-wrap: wrap;
+          flex-direction: column;
+          gap: 8px;
           margin-bottom: 24px;
           padding-bottom: 20px;
           border-bottom: 1px solid #1B2A40;
         }
-        .dash__refresh, .dash__export, .dash__signout, .dash__toggle-all {
+
+        .dash__refresh, .dash__pdf, .dash__export, .dash__toggle-all {
           border: 1px solid #24354F;
           background: transparent;
           color: #E8EDF2;
@@ -451,6 +594,19 @@ export default function AttendanceDashboard({ token, onLogout }) {
         .dash__refresh:hover:not(:disabled) {
           background: #16243A;
         }
+        .dash__pdf {
+          background: #3E8E7E;
+          border-color: #3E8E7E;
+          color: #0F1B2C;
+          font-weight: 600;
+        }
+        .dash__pdf:hover:not(:disabled) {
+          background: #4EA391;
+        }
+        .dash__pdf:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
         .dash__export {
           border-color: #3E8E7E;
           color: #3E8E7E;
@@ -458,7 +614,7 @@ export default function AttendanceDashboard({ token, onLogout }) {
         .dash__export:hover {
           background: rgba(62, 142, 126, 0.12);
         }
-        .dash__signout:hover, .dash__toggle-all:hover {
+        .dash__toggle-all:hover {
           background: #16243A;
         }
         .dash__error {
@@ -471,6 +627,48 @@ export default function AttendanceDashboard({ token, onLogout }) {
           font-size: 14px;
           padding: 40px 0;
           text-align: center;
+        }
+
+        /* Content sections — "Overview" (collapsible) and "Detailed
+           records" each get their own labelled zone so it's clear which
+           question each part of the page answers. */
+        .dash__section {
+          margin-bottom: 32px;
+        }
+        .dash__section-header {
+          width: 100%;
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          background: none;
+          border: none;
+          border-bottom: 1px solid #24354F;
+          color: #E8EDF2;
+          padding: 0 0 12px;
+          margin-bottom: 20px;
+          font-family: inherit;
+          cursor: pointer;
+          text-align: left;
+        }
+        .dash__section-title {
+          font-size: 15px;
+          font-weight: 700;
+        }
+        .dash__section-title-static {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          border-bottom: 1px solid #24354F;
+          padding-bottom: 12px;
+          margin-bottom: 20px;
+          font-size: 15px;
+          font-weight: 700;
+        }
+        .dash__section-hint {
+          font-size: 11px;
+          font-weight: 400;
+          color: #66768A;
+          margin-left: auto;
         }
         .dash__accordion {
           display: flex;
@@ -560,14 +758,39 @@ export default function AttendanceDashboard({ token, onLogout }) {
           color: #8A99AC;
           border-color: #3A4A61;
         }
+        .status--early {
+          color: #5B8DC9;
+          border-color: #2E4E77;
+        }
+        .status--critical {
+          color: #C9535A;
+          border-color: #7A3236;
+        }
         .status--flag {
           color: #C9A227;
           border-color: #8A6E1B;
           margin-left: 6px;
         }
+        .dash__shift-note {
+          font-size: 11px;
+          color: #8A99AC;
+          margin-top: 2px;
+        }
+        .dash__shift-note--warn {
+          color: #C9A227;
+        }
+        .approval {
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .approval--approved { color: #3E8E7E; }
+        .approval--pending { color: #8A99AC; }
+        .approval--changed { color: #C9A227; }
 
         @media (max-width: 640px) {
           .dash { padding: 20px; }
+          .dash__controlbar { flex-direction: column; gap: 20px; }
+          .dash__section-hint { margin-left: 0; }
           .dash__table thead { display: none; }
           .dash__table, .dash__table tbody, .dash__table tr, .dash__table td {
             display: block;
