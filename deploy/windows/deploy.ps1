@@ -10,15 +10,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell turns anything a native tool writes to stderr into an
+# error record, which 'Stop' makes fatal - and npm writes routine warnings
+# there. So run native tools with 'Continue', print their stderr as plain
+# text, and judge success by exit code alone.
 function Invoke-Native([string]$Label, [scriptblock]$Command) {
   Write-Host "==> $Label"
-  & $Command
+  $ErrorActionPreference = 'Continue'
+  & $Command 2>&1 | ForEach-Object { Write-Host "$_" }
   if ($LASTEXITCODE -ne 0) { throw "$Label failed (exit code $LASTEXITCODE)" }
 }
 
 if (-not (Test-Path "$AppDir\.env")) {
   throw "$AppDir\.env not found - run deploy\windows\setup-server.ps1 and create the .env first."
 }
+
+# Keep a copy of every deploy's output on the server (last 20 runs).
+Start-Transcript -Path "$AppDir\logs\deploy-$(Get-Date -Format 'yyyyMMdd-HHmmss').log" | Out-Null
+Get-ChildItem "$AppDir\logs\deploy-*.log" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 | Remove-Item
 
 # 1. Build in the runner workspace so a failed build never touches the live app.
 Push-Location $Source
