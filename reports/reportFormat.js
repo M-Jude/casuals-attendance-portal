@@ -35,8 +35,17 @@ function formatCell(col, value, { blank = '' } = {}) {
   }
 }
 
+// "(+1)" after a clock-out on a later day than the line's date (a double
+// shift, see withNextDayOut in reportCatalog.js); '' otherwise. Renderers
+// that can colour it show it in DAY_MARK_COLOR.
+const DAY_MARK_COLOR = '#1D4ED8';
+function dayMark(row, key) {
+  const n = row?._dayOffset?.[key];
+  return n ? `(+${n})` : '';
+}
+
 function generatedStamp(date) {
   return `${fmtDateTime(date)} EAT`;
 }
 
-module.exports = { formatCell, fmtDateTime, generatedStamp };
+module.exports = { formatCell, fmtDateTime, generatedStamp, dayMark, DAY_MARK_COLOR };

@@ -3,7 +3,7 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { downloadStamp } = require('../services/audit');
 const { summaryVisibility, ROLE_LABELS } = require('../middleware/requireRole');
-const { REPORT_TYPES, REPORT_COLUMNS, catalogFor, resolvePeriod, buildReport, applyColumnChoice } = require('../reports/reportCatalog');
+const { REPORT_TYPES, REPORT_COLUMNS, catalogFor, resolvePeriod, buildReport, applyColumnChoice, addDays } = require('../reports/reportCatalog');
 const { renderCsv } = require('../reports/renderCsv');
 const { renderXlsx } = require('../reports/renderXlsx');
 const { renderPdf } = require('../reports/renderPdf');
@@ -139,23 +139,31 @@ router.get('/reports/:type', authenticate, async (req, res) => {
     ]);
 
     let data;
+    // Loaded a day either side of the period and for every shift, so double
+    // shifts (two shifts back to back) crossing the period's edge or half
+    // outside a shift filter are still recognised; the report itself gets
+    // only the period's rows.
+    let doubleRows = null;
     if (type.id === 'approvals') {
       data = await loadApprovalUnits(req.user, period);
     } else {
-      data = await prisma.dailyAttendanceSummary.findMany({
+      doubleRows = await prisma.dailyAttendanceSummary.findMany({
         where: {
-          date: { gte: new Date(`${period.from}T00:00:00Z`), lte: new Date(`${period.to}T00:00:00Z`) },
+          date: { gte: new Date(`${addDays(period.from, -1)}T00:00:00Z`), lte: new Date(`${addDays(period.to, 1)}T00:00:00Z`) },
           ...visibility,
-          ...(worker ? { casualWorkerId: worker.id } : {}),
-          ...(shiftFilter ? { shift: { name: shiftFilter } } : {})
+          ...(worker ? { casualWorkerId: worker.id } : {})
         },
         select: { ...SUMMARY_SELECT, ...(BADGE_REPORTS.has(type.id) ? { punchIds: true } : {}) },
         take: MAX_ROWS + 1
       });
-      if (data.length > MAX_ROWS) return res.status(413).json({ error: 'Too many records for one report. Choose a shorter period.' });
+      if (doubleRows.length > MAX_ROWS) return res.status(413).json({ error: 'Too many records for one report. Choose a shorter period.' });
+      data = doubleRows.filter((r) => {
+        const d = dateStrOf(r.date);
+        return d >= period.from && d <= period.to && (!shiftFilter || r.shift.name === shiftFilter);
+      });
     }
 
-    const ctx = { shifts, crewsById: new Map(crews.map((c) => [c.id, c])), worker };
+    const ctx = { shifts, crewsById: new Map(crews.map((c) => [c.id, c])), worker, doubleRows };
     // Each worker's own crew on a date, from their confirmed schedule.
     if (type.id !== 'approvals') {
       const workerIds = [...new Set(data.map((r) => r.worker.id))];

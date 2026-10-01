@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
 import AttendanceAnalytics from './AttendanceAnalytics';
 import { statusTags, isGuessed, GUESSED_TITLE } from './shiftStatus';
+import { doubleShiftRuns, doubleShiftTitle, normalizeDoubles, mergeDoubles, recordsOf } from './doubleShift';
 import StatusTags from './StatusTags';
 import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
@@ -36,6 +37,14 @@ function formatDate(dateStr) {
 }
 
 function approvalState(row) {
+  // A merged Day + Night line: each shift is approved by its own supervisor.
+  if (row.parts) {
+    const [a, b] = row.parts.map(approvalState);
+    if (a.key === b.key) return a;
+    const title = `Day: ${a.title}. Night: ${b.title}. Each shift is approved by its own supervisor.`;
+    if (a.key === 'changed' || b.key === 'changed') return { key: 'changed', label: 'Changed', title };
+    return { key: 'pending', label: `${a.key === 'approved' ? 'Day' : 'Night'} approved`, title };
+  }
   if (row.changedAfterApproval) {
     return { key: 'changed', label: 'Changed', title: 'Changed after approval — the approved values stand until re-approved' };
   }
@@ -231,27 +240,27 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
     }
   }
 
+  // Shifts worked back to back are double shifts. A Day + that evening's
+  // Night is one line, from the Day's clock-in to the Night's clock-out (its
+  // hours shared between the two stored shifts for the analytics); a Night +
+  // the next morning's Day stays two lines. Found from every loaded row, so
+  // filtering to one shift still marks them.
+  const records = useMemo(() => normalizeDoubles(rows), [rows]);
+  const lines = useMemo(() => mergeDoubles(records), [records]);
+  const doubleShifts = useMemo(() => doubleShiftRuns(records), [records]);
+  const isDoubleRow = useCallback((r) => !!r.parts || doubleShifts.has(r.id), [doubleShifts]);
+
   const visibleRows = useMemo(() => {
     const idQuery = filterId.trim().toLowerCase();
     const nameQuery = filterName.trim().toLowerCase();
-    return rows.filter(
+    return lines.filter(
       (r) =>
         (!idQuery || r.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
         (!nameQuery || r.worker.name.toLowerCase().includes(nameQuery)) &&
-        (!filterShift || r.shift.name === filterShift) &&
+        (!filterShift || (filterShift === 'double' ? isDoubleRow(r) : r.parts ? true : r.shift.name === filterShift)) &&
         (!filterApproval || approvalState(r).key === filterApproval)
     );
-  }, [rows, filterId, filterName, filterShift, filterApproval]);
-
-  // Worker+date pairs with both a Day and a Night row — a double shift.
-  const doubleShifts = useMemo(() => {
-    const seen = new Map();
-    for (const r of rows) {
-      const k = `${r.worker.id}|${r.date.slice(0, 10)}`;
-      seen.set(k, (seen.get(k) || 0) + 1);
-    }
-    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
-  }, [rows]);
+  }, [lines, filterId, filterName, filterShift, filterApproval, isDoubleRow]);
 
   const sortedRows = useMemo(() => sortRows(visibleRows, sortBy), [visibleRows, sortBy]);
   const [sortField, sortDir] = sortBy.split('-');
@@ -307,10 +316,10 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   function renderRow(row) {
     const dateStr = row.date.slice(0, 10);
     const approval = approvalState(row);
-    const note = doubleShifts.has(`${row.worker.id}|${dateStr}`) ? { text: 'Double shift' }
-      : isGuessed(row) ? { text: 'Shift guessed', warn: true, title: GUESSED_TITLE }
+    const isDouble = isDoubleRow(row);
+    const note = isGuessed(row) ? { text: 'Shift guessed', warn: true, title: GUESSED_TITLE }
       : row.source === 'unscheduled' ? { text: 'Unscheduled', warn: true, title: "Worked outside this worker's schedule — a supervisor can record an exception" }
-        : row.source === 'exception' ? { text: 'Exception' }
+        : row.source === 'exception' && !isDouble ? { text: 'Exception' }
           : row.source === 'suggested' ? { text: 'Schedule not confirmed', title: 'No confirmed schedule yet — judged against the pattern their punches fit, pending HR confirmation' }
             : null;
     const implied = 'No badge at the double-shift changeover — split at the scheduled time';
@@ -328,7 +337,21 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         </td>
         <td className="mono" data-label="Date">{formatDate(dateStr)}</td>
         <td data-label="Shift">
-          <span className={`shift-tag shift-tag--${row.shift.name === 'Night' ? 'night' : 'day'}`}>{row.shift.name}</span>
+          {row.parts ? (
+            <>
+              <span className="shift-tag shift-tag--day">Day</span> + <span className="shift-tag shift-tag--night">Night</span>
+              <div>
+                <span className="tag tag--double" title="Worked the Day and the Night back to back — 2 shifts, shown as one line from the Day's clock-in to the Night's clock-out. Each shift is approved by its own supervisor.">
+                  Double shift · 2 shifts
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <span className={`shift-tag shift-tag--${row.shift.name === 'Night' ? 'night' : 'day'}`}>{row.shift.name}</span>
+              {isDouble && <div><span className="tag tag--double" title={doubleShiftTitle(doubleShifts.get(row.id))}>Double shift</span></div>}
+            </>
+          )}
           {note && <div className={`dash__sub ${note.warn ? 'dash__sub--warn' : ''}`} title={note.title}>{note.text}</div>}
         </td>
         <td className="mono" data-label="In">
@@ -417,6 +440,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
               <option value="">Day &amp; Night</option>
               <option value="Day">Day</option>
               <option value="Night">Night</option>
+              <option value="double">Double shifts only</option>
             </select>
           </label>
           {user.role !== 'finance' && (
@@ -451,7 +475,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
             <span className="dash__section-title">Overview</span>
             <span className="dash__section-hint">at a glance for the selected period</span>
           </button>
-          {analyticsOpen && <AttendanceAnalytics rows={sortedRows} />}
+          {analyticsOpen && <AttendanceAnalytics rows={recordsOf(sortedRows)} />}
         </section>
       )}
 

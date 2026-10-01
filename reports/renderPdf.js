@@ -6,7 +6,7 @@
 
 const PDFDocument = require('pdfkit');
 const { C, STATUS, safe, txt, fit, emblem } = require('./attendancePdf');
-const { formatCell, generatedStamp } = require('./reportFormat');
+const { formatCell, generatedStamp, dayMark, DAY_MARK_COLOR } = require('./reportFormat');
 
 const M = 36;
 const TONE = { navy: C.navy2, teal: C.teal, ok: STATUS['on-time'].bar, warn: STATUS.late.bar, grey: STATUS['no-checkout'].bar, critical: STATUS['no-show'].bar };
@@ -245,7 +245,8 @@ function drawRow(doc, y, cols, widths, row, { h, size, zebra, totals }) {
       if (!totals && raw) drawStatusTags(doc, raw, x, w, mid, size); // blank when neither applies
     } else if (!totals && c.type === 'code') {
       if (raw) {
-        const [fg, bg] = CODE[raw] || [C.muted, C.zebra];
+        // N+ / +D (a double shift across midnight) share the DN colours.
+        const [fg, bg] = CODE[raw.includes('+') ? 'DN' : raw] || [C.muted, C.zebra];
         doc.roundedRect(x + 1.5, y + 2, w - 3, h - 4, 2).fill(bg);
         txt(doc, raw, x, mid - (size - 1) / 2, { size: size - 1, font: 'Helvetica-Bold', color: fg, width: w, align: 'center' });
       }
@@ -259,6 +260,17 @@ function drawRow(doc, y, cols, widths, row, { h, size, zebra, totals }) {
         const { lines, size: fs } = wrapText(doc, text, w - pad * 2, font, size);
         const top = mid - (lines.length * (fs + LINE_GAP)) / 2 + LINE_GAP / 2 + 0.3;
         lines.forEach((ln, k) => txt(doc, ln, x + pad, top + k * (fs + LINE_GAP), { size: fs, font, color, width: w - pad * 2, align }));
+      } else if (!totals && dayMark(row, c.key)) {
+        // Time then a blue "(+1)", centred together; shrinks to fit like below.
+        const mark = dayMark(row, c.key);
+        const head = (fs) => doc.font(font).fontSize(fs).widthOfString(safe(`${text} `));
+        const both = (fs) => head(fs) + doc.font('Helvetica-Bold').fontSize(fs).widthOfString(mark);
+        let fs = size;
+        while (fs > size - 2.5 && both(fs) > w - pad * 2) fs -= 0.25;
+        const tw = head(fs);
+        const x0 = x + Math.max(pad, (w - both(fs)) / 2);
+        txt(doc, text, x0, mid - fs / 2 + 0.5, { size: fs, font, color });
+        txt(doc, mark, x0 + tw, mid - fs / 2 + 0.5, { size: fs, font: 'Helvetica-Bold', color: DAY_MARK_COLOR });
       } else {
         // Numbers and dates shrink a little to fit rather than lose digits.
         let fs = size;

@@ -35,7 +35,9 @@ app.use('/api', require('./routes/notifications'));        // in-app notificatio
 app.use('/api', require('./routes/audit'));                // audit log (System Admin)
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+// HOST=127.0.0.1 in production keeps the API reachable only through the
+// reverse proxy on this machine; unset, it listens on every interface.
+app.listen(PORT, process.env.HOST, () => {
   console.log(`Casuals attendance portal API listening on port ${PORT}`);
 });
 

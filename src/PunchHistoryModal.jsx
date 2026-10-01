@@ -18,6 +18,7 @@ function formatDate(dateStr) {
 // Devices here don't label punches, so a punch's role comes from which
 // shift window it fell in (see sync/shiftEngine.js).
 function punchRole(p) {
+  if (p.changeover) return 'Changeover (Day → Night)';
   if (p.usedAsCheckIn && p.usedAsCheckOut) return 'Check-out and next check-in';
   if (p.usedAsCheckIn) return 'Check-in';
   if (p.usedAsCheckOut) return 'Check-out';
@@ -36,12 +37,34 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
       setLoading(true);
       setError('');
       try {
-        const params = new URLSearchParams({ summaryId: String(summary.id) });
-        const res = await fetch(`/api/attendance/punches?${params}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!res.ok) throw new Error('Request failed');
-        const { punches: data } = await res.json();
+        const loadFor = async (id) => {
+          const params = new URLSearchParams({ summaryId: String(id) });
+          const res = await fetch(`/api/attendance/punches?${params}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!res.ok) throw new Error('Request failed');
+          return (await res.json()).punches;
+        };
+        let data;
+        if (summary.parts) {
+          // A Day + Night double shift: both shifts' badges, the Day's
+          // check-out / Night's check-in being the changeover.
+          const [day, night] = await Promise.all(summary.parts.map((p) => loadFor(p.id)));
+          const byId = new Map();
+          for (const p of day) byId.set(p.id, { ...p, usedAsCheckOut: false, changeover: p.usedAsCheckOut });
+          for (const p of night) {
+            const prev = byId.get(p.id);
+            byId.set(p.id, {
+              ...p,
+              usedAsCheckIn: !!prev?.usedAsCheckIn,
+              usedAsCheckOut: p.usedAsCheckOut,
+              changeover: !!prev?.changeover || p.usedAsCheckIn
+            });
+          }
+          data = [...byId.values()].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        } else {
+          data = await loadFor(summary.id);
+        }
         if (!cancelled) setPunches(data);
       } catch {
         if (!cancelled) setError('Could not load punch history.');
@@ -76,7 +99,7 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           <div>
             <div id="punch-modal-title" className="modal__title">{summary.worker.name}</div>
             <div className="modal__subtitle">
-              {formatDate(summary.date.slice(0, 10))} · {summary.shift.name} shift
+              {formatDate(summary.date.slice(0, 10))} · {summary.shift.name} shift{summary.parts ? ' — double shift, 2 shifts' : ''}
             </div>
           </div>
           <button className="modal__close" onClick={onClose} aria-label="Close">×</button>
@@ -105,17 +128,26 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
             <div className="modal__flag">⚠ Worked outside this worker’s schedule. A supervisor can record an exception for this date.</div>
           )}
           {isGuessed(summary) && <div className="modal__flag">⚠ Shift guessed. {GUESSED_TITLE}</div>}
-          {(summary.checkInImplied || summary.checkOutImplied) && (
+          {summary.parts && (
+            <div className="modal__note">
+              Worked the Day and the Night back to back — counted as 2 shifts. Hours run from the Day’s clock-in to the Night’s clock-out
+              (Day {summary.parts[0].hoursWorked ?? '—'} h + Night {summary.parts[1].hoursWorked ?? '—'} h).
+            </div>
+          )}
+          {!summary.parts && (summary.checkInImplied || summary.checkOutImplied) && (
             <div className="modal__note">Double shift with no badge at the changeover — split at the scheduled handover time.</div>
           )}
-          <div className="modal__note">
-            {summary.changedAfterApproval
-              ? '⚠ Changed after approval — the approved values stand until it is re-approved.'
-              : summary.approvedAt
-                ? `Approved ${formatDateTime(summary.approvedAt)}.`
-                : 'Not yet approved.'}
-            {summary.supervisorComment ? ` Supervisor: “${summary.supervisorComment}”` : ''}
-          </div>
+          {(summary.parts || [summary]).map((p) => (
+            <div key={p.id} className="modal__note">
+              {summary.parts ? `${p.shift.name}: ` : ''}
+              {p.changedAfterApproval
+                ? '⚠ Changed after approval — the approved values stand until it is re-approved.'
+                : p.approvedAt
+                  ? `Approved ${formatDateTime(p.approvedAt)}.`
+                  : 'Not yet approved.'}
+              {p.supervisorComment ? ` Supervisor: “${p.supervisorComment}”` : ''}
+            </div>
+          ))}
           {summary.hasMultiplePunches && (
             <div className="modal__flag">⚠ Multiple check-ins or check-outs were recorded for this shift — see below.</div>
           )}
@@ -131,7 +163,7 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           ) : (
             <ul className="punch-list">
               {punches.map((p) => {
-                const used = p.usedAsCheckIn || p.usedAsCheckOut;
+                const used = p.usedAsCheckIn || p.usedAsCheckOut || p.changeover;
                 return (
                   <li key={p.id} className={`punch-item ${used ? 'punch-item--used' : 'punch-item--ignored'}`}>
                     <span className="punch-item__time mono">{formatDateTime(p.timestamp)}</span>

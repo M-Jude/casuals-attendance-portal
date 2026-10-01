@@ -31,10 +31,23 @@ function RowFlags({ row }) {
       {row.source === 'exception' && <span className="chip chip--info">Exception</span>}
       {row.source === 'suggested' && <span className="chip" title="No confirmed schedule yet — judged against the pattern their punches fit">Schedule not confirmed</span>}
       {row.source === 'unscheduled' && <span className="chip chip--warn">Unscheduled</span>}
-      {isGuessed(row) && <span className="chip chip--warn" title={GUESSED_TITLE}>Shift guessed</span>}
+      {isGuessed(row) && !row.double && <span className="chip chip--warn" title={GUESSED_TITLE}>Shift guessed</span>}
       {row.hasMultiplePunches && <span className="chip chip--warn">Multiple punches</span>}
       {(row.checkInImplied || row.checkOutImplied) && <span className="chip">Implied time</span>}
     </>
+  );
+}
+
+// Half of a Day + Night double shift: the other shift is approved by its own
+// supervisor; show the whole stretch so it's clear both were worked.
+function DoubleNote({ row }) {
+  const d = row.double;
+  if (!d) return null;
+  const continues = d.part === 'Day' ? `continues into the Night until ${formatTime(d.checkOut)}` : `continues from the Day, in at ${formatTime(d.checkIn)}`;
+  return (
+    <div className="small" style={{ color: 'var(--info)' }} title={`The ${d.partnerShift} shift is approved by ${d.partnerApprover}${d.partnerApproved ? ' (approved)' : ' (not yet approved)'}.`}>
+      Double shift — 2 shifts; {continues}. {d.totalHours != null ? `${d.totalHours} h in all.` : ''}
+    </div>
   );
 }
 
@@ -147,13 +160,18 @@ function UnitDetail({ api, id, onBack, onApproved }) {
                 <div className="small muted mono">{r.worker.biostarUserId}</div>
               </td>
               {isMonth && <td className="mono small">{formatDateLabel(r.date)}</td>}
-              <td>{r.shift.name}</td>
-              <td className="mono">{formatTime(r.checkIn)}</td>
-              <td className="mono">{formatTime(r.checkOut)}</td>
-              <td className="mono">{r.hoursWorked ?? '—'}</td>
               <td>
-                <StatusTags row={r} />
+                {r.shift.name}
+                {r.double && <div><span className="tag tag--double">Double shift</span></div>}
+              </td>
+              {/* For half of a double shift: the changeover stands in for a missing in/out, and the hours are this shift's share. */}
+              <td className="mono">{formatTime(r.checkIn || (r.double?.part === 'Night' ? r.double.changeover : null))}</td>
+              <td className="mono">{formatTime(r.checkOut || (r.double?.part === 'Day' ? r.double.changeover : null))}</td>
+              <td className="mono" title={r.double ? 'This shift\'s share of the double shift' : undefined}>{(r.double ? r.double.shareHours : r.hoursWorked) ?? '—'}</td>
+              <td>
+                {r.double ? <StatusTags tags={r.double.part === 'Day' ? statusTags(r).filter((t) => t !== 'early-out') : statusTags(r).filter((t) => t !== 'late-in')} /> : <StatusTags row={r} />}
                 <PendingChange row={r} />
+                <DoubleNote row={r} />
               </td>
               <td><RowFlags row={r} /></td>
               <td>

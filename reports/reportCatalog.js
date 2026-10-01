@@ -10,6 +10,8 @@
 //
 // No database or HTTP here — see routes/reports.js for loading.
 
+const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('./doubleShift');
+
 const DAY_MS = 24 * 3600 * 1000;
 const EAT_OFFSET_MS = 3 * 3600 * 1000;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -53,15 +55,15 @@ const REPORT_TYPES = [
   },
   {
     id: 'register', name: 'Attendance register', roles: EVERYONE, periods: ['week', 'month', 'range'], defaultPeriod: 'month',
-    description: 'Timesheet grid: workers down the side, dates across, D / N / A in each cell. Up to 31 days.'
+    description: 'Timesheet grid: workers down the side, dates across, D / N / DN (double shift) / A in each cell. Up to 31 days.'
   },
   {
     id: 'hours', name: 'Hours & payroll', roles: EVERYONE, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
-    description: 'Shifts and hours per worker, split into approved and still awaiting approval. A double shift counts as two.'
+    description: 'Shifts and hours per worker, split into approved and still awaiting approval, with double shifts and their hours. A double shift counts as two shifts.'
   },
   {
     id: 'exceptions', name: 'Exceptions', roles: EVERYONE, periods: ['day', 'week', 'month', 'range', 'all'], defaultPeriod: 'week',
-    description: 'Late arrivals (with minutes late), no-shows, missing punches, early check-outs, multiple punches and unscheduled shifts.'
+    description: 'Late arrivals (with minutes late), no-shows, missing punches, early check-outs, multiple punches, unscheduled shifts and double shifts.'
   },
   {
     id: 'daily-totals', name: 'Daily headcount', roles: EVERYONE, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
@@ -102,19 +104,20 @@ const COLUMN_LABELS = {
   issues: 'Total exceptions', workers: 'Workers', approved: 'Approved %',
   batch: 'Batch', state: 'State', records: 'Records', dueAt: 'Approvable from',
   escalatedAt: 'Escalated', approvedAt: 'Approved at', approvedBy: 'Approved by',
-  waitHours: 'Wait (h)', comment: 'Comment'
+  waitHours: 'Wait (h)', comment: 'Comment',
+  double: 'Double shifts', doubleHours: 'Double-shift hours', changeover: 'Changeover'
 };
 
 const REPORT_COLUMNS = {
   daily: ['id', 'worker', 'crew', 'checkIn', 'checkOut', 'hours', 'status', 'flags', 'approval'],
   timesheet: ['id', 'worker', 'date', 'shift', 'checkIn', 'checkOut', 'hours', 'status', 'lateBy', 'earlyBy', 'badges', 'flags'],
-  summary: ['id', 'worker', 'crew', 'worked', 'day', 'night', 'hours', 'avg', 'punctual', 'late', 'missing', 'noShow', 'earlyOut', 'rate'],
-  individual: ['date', 'week', 'shift', 'checkIn', 'checkOut', 'hours', 'status', 'badges', 'flags', 'approval', 'worked', 'day', 'night', 'late', 'missing', 'noShow'],
-  register: ['id', 'worker', 'dates', 'dayTotal', 'nightTotal', 'absent', 'hours'],
-  hours: ['id', 'worker', 'crew', 'day', 'night', 'worked', 'hours', 'approvedShifts', 'approvedHours', 'pendingShifts', 'pendingHours', 'changed'],
-  exceptions: ['date', 'shift', 'id', 'worker', 'crew', 'scheduled', 'checkIn', 'checkOut', 'minutes', 'missing', 'source', 'status', 'hours', 'late', 'noShow', 'earlyOut', 'issues'],
-  'daily-totals': ['date', 'day', 'night', 'worked', 'late', 'missing', 'noShow', 'hours', 'approved'],
-  crew: ['crew', 'date', 'shift', 'workers', 'scheduled', 'worked', 'late', 'missing', 'noShow', 'hours', 'rate', 'approved', 'approval'],
+  summary: ['id', 'worker', 'crew', 'worked', 'day', 'night', 'double', 'hours', 'avg', 'punctual', 'late', 'missing', 'noShow', 'earlyOut', 'rate'],
+  individual: ['date', 'week', 'shift', 'checkIn', 'checkOut', 'hours', 'status', 'badges', 'flags', 'approval', 'worked', 'day', 'night', 'double', 'late', 'missing', 'noShow'],
+  register: ['id', 'worker', 'dates', 'dayTotal', 'nightTotal', 'double', 'absent', 'hours'],
+  hours: ['id', 'worker', 'crew', 'day', 'night', 'double', 'worked', 'hours', 'doubleHours', 'approvedShifts', 'approvedHours', 'pendingShifts', 'pendingHours', 'changed'],
+  exceptions: ['date', 'shift', 'id', 'worker', 'crew', 'scheduled', 'checkIn', 'checkOut', 'minutes', 'missing', 'source', 'changeover', 'status', 'hours', 'late', 'noShow', 'earlyOut', 'issues'],
+  'daily-totals': ['date', 'day', 'night', 'double', 'worked', 'late', 'missing', 'noShow', 'hours', 'approved'],
+  crew: ['crew', 'date', 'shift', 'workers', 'scheduled', 'worked', 'double', 'late', 'missing', 'noShow', 'hours', 'rate', 'approved', 'approval'],
   approvals: ['batch', 'state', 'records', 'dueAt', 'escalatedAt', 'approvedAt', 'approvedBy', 'waitHours', 'comment'],
   detailed: ['date', 'shift', 'id', 'worker', 'crew', 'checkIn', 'checkOut', 'hours', 'status', 'flags', 'approval']
 };
@@ -225,7 +228,33 @@ const missingPunch = (r) => r.status === 'no-checkout' || r.status === 'no-check
 const pctOf = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : null);
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// Double shifts (two shifts back to back) — see reports/doubleShift.js.
+// The report's rows are normalizeDoubles() records: a same-date Day + Night
+// pair carries its share of the hours on each shift, and builders that list
+// shifts show the pair as one merged line (mergeDoubles()).
+// ctx.doubles is set by buildReport().
+const runOf = (ctx, r) => (worked(r) && ctx.doubles?.get(r.id)) || null;
+const isDouble = (ctx, r) => !!runOf(ctx, r);
+// Double shifts among `rows` that start between from and to (default: the
+// report period) — so one that runs past midnight on the last day of a
+// period is counted once, in the period it started.
+function countDoubles(ctx, rows, from = ctx.period?.from, to = ctx.period?.to) {
+  const ids = new Set();
+  for (const r of rows) {
+    const run = runOf(ctx, r);
+    if (run && (!from || run.startDate >= from) && (!to || run.startDate <= to)) ids.add(run.id);
+  }
+  return ids.size;
+}
+
 function approvalState(r) {
+  // A merged Day + Night line: each shift is approved by its own crew's
+  // supervisor, so say which is which when they differ.
+  if (r.parts) {
+    const states = r.parts.map(approvalState);
+    if (states[0] !== states[1]) return r.parts.map((p, i) => `${p.shift.name}: ${states[i]}`).join(' · ');
+    return states[0];
+  }
   if (r.changedAfterApproval) return 'Changed after approval';
   return r.approvedAt ? 'Approved' : 'Pending';
 }
@@ -246,8 +275,11 @@ function statusTags(r) {
 const isGuessed = (r) => r.source === 'unscheduled' && (!r.checkIn || !r.checkOut);
 
 // Flags no longer repeat Late in / Early out — those are the Status column.
-function flagsOf(r) {
+function flagsOf(ctx, r) {
   const f = [];
+  const run = runOf(ctx, r.parts ? r.parts[0] : r);
+  if (r.parts) f.push(`Double shift - 2 shifts (${run ? run.label : 'Day + Night'})`);
+  else if (run) f.push(`Double shift (${run.label})`);
   if (r.hasMultiplePunches) f.push('Multiple punches');
   if (r.checkInImplied || r.checkOutImplied) f.push('Implied time');
   if (r.source === 'unscheduled') f.push(isGuessed(r) ? 'Unscheduled, shift guessed' : 'Unscheduled');
@@ -276,6 +308,7 @@ function tallyByWorker(ctx, rows) {
     if (!map.has(r.worker.id)) {
       map.set(r.worker.id, {
         worker: r.worker, crew: NO_CREW, records: 0, worked: 0, day: 0, night: 0, hours: 0, hoursN: 0,
+        double: 0, doubleHours: 0, doubleRuns: new Set(),
         punctual: 0, late: 0, missing: 0, noShow: 0, earlyOut: 0,
         approvedShifts: 0, approvedHours: 0, pendingShifts: 0, pendingHours: 0, changed: 0
       });
@@ -288,6 +321,13 @@ function tallyByWorker(ctx, rows) {
       if (r.shift.name === 'Night') t.night++; else t.day++;
       const approved = r.approvedAt && !r.changedAfterApproval;
       if (approved) { t.approvedShifts++; t.approvedHours += r.hoursWorked || 0; } else { t.pendingShifts++; t.pendingHours += r.hoursWorked || 0; }
+      const run = runOf(ctx, r);
+      if (run) {
+        // Hours stay with their own record's date; the count with the start.
+        t.doubleHours += r.hoursWorked || 0;
+        if (!ctx.period || (run.startDate >= ctx.period.from && run.startDate <= ctx.period.to)) t.doubleRuns.add(run.id);
+        t.double = t.doubleRuns.size;
+      }
     }
     if (r.hoursWorked != null) { t.hours += r.hoursWorked; t.hoursN++; }
     if (punctual(r)) t.punctual++;
@@ -300,14 +340,15 @@ function tallyByWorker(ctx, rows) {
   return [...map.values()].sort((a, b) => a.worker.name.localeCompare(b.worker.name));
 }
 
-function overallKpis(rows) {
+function overallKpis(ctx, rows) {
   const w = rows.filter(worked);
+  const doubles = countDoubles(ctx, rows);
   const hours = rows.reduce((a, r) => a + (r.hoursWorked || 0), 0);
   const completed = rows.filter((r) => punctual(r) || r.status === 'late').length;
   const noShow = rows.filter((r) => r.status === 'no-show').length;
   return [
     { label: 'Workers', value: String(new Set(rows.map((r) => r.worker.id)).size), sub: 'with records in the period', tone: 'navy' },
-    { label: 'Shifts worked', value: String(w.length), sub: `${w.filter((r) => r.shift.name !== 'Night').length} Day / ${w.filter((r) => r.shift.name === 'Night').length} Night`, tone: 'navy' },
+    { label: 'Shifts worked', value: String(w.length), sub: `${w.filter((r) => r.shift.name !== 'Night').length} Day / ${w.filter((r) => r.shift.name === 'Night').length} Night · ${doubles} double`, tone: 'navy' },
     { label: 'Hours worked', value: hours.toFixed(1), sub: completed ? `avg ${(hours / Math.max(1, rows.filter((r) => r.hoursWorked != null).length)).toFixed(1)} h per shift` : 'no completed shifts', tone: 'teal' },
     { label: 'Punctuality', value: completed ? `${Math.round((rows.filter(punctual).length / completed) * 100)}%` : '-', sub: `${rows.filter(punctual).length} of ${completed} completed shifts`, tone: 'ok' },
     { label: 'Late arrivals', value: String(rows.filter((r) => r.status === 'late').length), sub: 'checked in after the grace period', tone: 'warn' },
@@ -343,10 +384,17 @@ function shiftRecordRow(ctx, r) {
     checkOut: r.checkOut,
     hours: r.hoursWorked,
     status: statusTags(r),
-    flags: flagsOf(r),
+    flags: flagsOf(ctx, r),
     approval: approvalState(r),
-    badges: (ctx.punchTimes?.get(r.id) || []).map((t) => eatClock(t)).join(', ')
+    badges: badgesOf(ctx, r).map((t) => eatClock(t)).join(', ')
   };
+}
+
+// Every badge a line captured, in order — both shifts' for a merged line.
+function badgesOf(ctx, r) {
+  if (!r.parts) return ctx.punchTimes?.get(r.id) || [];
+  const all = r.parts.flatMap((p) => ctx.punchTimes?.get(p.id) || []);
+  return [...new Map(all.map((t) => [new Date(t).getTime(), t])).values()].sort((a, b) => new Date(a) - new Date(b));
 }
 
 function shiftLabel(ctx, shiftName) {
@@ -357,21 +405,35 @@ function shiftLabel(ctx, shiftName) {
 // ---------------------------------------------------------------- builders
 
 function buildDaily(ctx, rows) {
+  const lines = mergeDoubles([...rows].sort(byName));
+  const columns = [COL.id, COL.worker, COL.crew, COL.in, COL.out, COL.hours, COL.status, COL.flags, COL.approval];
   const sections = ctx.shifts
     .map((s) => {
-      const list = rows.filter((r) => r.shift.id === s.id).sort(byName);
+      const list = lines.filter((r) => !r.parts && r.shift.id === s.id);
       if (list.length === 0) return null;
       const w = list.filter(worked);
       return {
         title: shiftLabel(ctx, s.name),
-        note: `${list.length} scheduled or present · ${w.length} worked · ${list.filter((r) => r.status === 'late').length} late · ${list.filter((r) => r.status === 'no-show').length} no-show`,
-        columns: [COL.id, COL.worker, COL.crew, COL.in, COL.out, COL.hours, COL.status, COL.flags, COL.approval],
+        note: `${list.length} scheduled or present · ${w.length} worked · ${list.filter((r) => r.status === 'late').length} late · ${list.filter((r) => r.status === 'no-show').length} no-show · ${countDoubles(ctx, list)} on a double shift`,
+        columns,
         rows: list.map((r) => shiftRecordRow(ctx, r)),
         totals: { worker: `${w.length} worked of ${list.length}`, hours: round2(list.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
       };
     })
     .filter(Boolean);
-  return { title: 'Daily attendance report', kpis: overallKpis(rows), sections };
+  // Workers on the Day and the Night back to back: one line each, from the
+  // Day's clock-in to the Night's clock-out.
+  const doubles = lines.filter((r) => r.parts);
+  if (doubles.length) {
+    sections.push({
+      title: 'Double shift (Day + Night)',
+      note: `${doubles.length} worker${doubles.length === 1 ? '' : 's'} worked both shifts back to back — 2 shifts each, ${doubles.length * 2} in all`,
+      columns,
+      rows: doubles.map((r) => shiftRecordRow(ctx, r)),
+      totals: { worker: `${doubles.length} double shift${doubles.length === 1 ? '' : 's'}`, hours: round2(doubles.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
+    });
+  }
+  return { title: 'Daily attendance report', kpis: overallKpis(ctx, rows), sections };
 }
 
 function summaryColumns() {
@@ -380,6 +442,7 @@ function summaryColumns() {
     { key: 'worked', label: 'Shifts worked', type: 'int', width: 0.9 },
     { key: 'day', label: 'Day', type: 'int', width: 0.6 },
     { key: 'night', label: 'Night', type: 'int', width: 0.6 },
+    { key: 'double', label: 'Double shifts', type: 'int', width: 0.8 },
     { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 },
     { key: 'avg', label: 'Avg h/shift', type: 'hours', width: 0.8 },
     { key: 'punctual', label: 'On time', type: 'int', width: 0.7 },
@@ -395,7 +458,7 @@ function buildSummary(ctx, rows, period) {
   const tallies = tallyByWorker(ctx, rows);
   const out = tallies.map((t) => ({
     id: t.worker.biostarUserId, worker: t.worker.name, crew: t.crew,
-    worked: t.worked, day: t.day, night: t.night, hours: round2(t.hours), avg: t.hoursN ? round2(t.hours / t.hoursN) : null,
+    worked: t.worked, day: t.day, night: t.night, double: t.double, hours: round2(t.hours), avg: t.hoursN ? round2(t.hours / t.hoursN) : null,
     punctual: t.punctual, late: t.late, missing: t.missing, noShow: t.noShow, earlyOut: t.earlyOut,
     rate: pctOf(t.worked, t.worked + t.noShow)
   }));
@@ -403,14 +466,14 @@ function buildSummary(ctx, rows, period) {
   const title = { week: 'Weekly attendance summary', month: 'Monthly attendance summary', all: 'All-time attendance summary' }[period.kind] || 'Attendance summary';
   return {
     title,
-    kpis: overallKpis(rows),
+    kpis: overallKpis(ctx, rows),
     sections: [{
       title: 'Per worker',
-      note: `${out.length} worker${out.length === 1 ? '' : 's'}`,
+      note: `${out.length} worker${out.length === 1 ? '' : 's'} · a double shift counts as two shifts worked`,
       columns: summaryColumns(),
       rows: out,
       totals: {
-        worker: `${out.length} workers`, worked: sum('worked'), day: sum('day'), night: sum('night'), hours: round2(sum('hours')),
+        worker: `${out.length} workers`, worked: sum('worked'), day: sum('day'), night: sum('night'), double: sum('double'), hours: round2(sum('hours')),
         avg: rows.some((r) => r.hoursWorked != null) ? round2(sum('hours') / rows.filter((r) => r.hoursWorked != null).length) : null,
         punctual: sum('punctual'), late: sum('late'), missing: sum('missing'), noShow: sum('noShow'), earlyOut: sum('earlyOut'),
         rate: pctOf(sum('worked'), sum('worked') + sum('noShow'))
@@ -422,14 +485,15 @@ function buildSummary(ctx, rows, period) {
 function buildIndividual(ctx, rows, period) {
   const worker = ctx.worker;
   const list = [...rows].sort((a, b) => a.date - b.date || a.shift.id - b.shift.id);
+  const lines = mergeDoubles(list);
   const t = tallyByWorker(ctx, list)[0];
   const crew = t ? t.crew : NO_CREW;
 
   const sections = [{
     title: 'Shift by shift',
-    note: `${list.length} record${list.length === 1 ? '' : 's'}`,
-    columns: [COL.date, COL.shift, COL.in, COL.out, COL.hours, COL.status, { key: 'badges', label: 'All badges', type: 'text', width: 1.8 }, COL.flags, COL.approval],
-    rows: list.map((r) => shiftRecordRow(ctx, r)),
+    note: `${list.length} shift record${list.length === 1 ? '' : 's'}${t && t.double ? ` · ${t.double} double shift${t.double === 1 ? '' : 's'} (${round2(t.doubleHours)} h); a Day + Night double is one line` : ''}`,
+    columns: [COL.date, { ...COL.shift, width: 1.1 }, COL.in, COL.out, COL.hours, COL.status, { key: 'badges', label: 'All badges', type: 'text', width: 1.8 }, COL.flags, COL.approval],
+    rows: lines.map((r) => shiftRecordRow(ctx, r)),
     totals: { date: `${t ? t.worked : 0} shifts worked`, hours: round2(list.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
   }];
 
@@ -447,6 +511,7 @@ function buildIndividual(ctx, rows, period) {
         { key: 'worked', label: 'Shifts worked', type: 'int', width: 1 },
         { key: 'day', label: 'Day', type: 'int', width: 0.7 },
         { key: 'night', label: 'Night', type: 'int', width: 0.7 },
+        { key: 'double', label: 'Double shifts', type: 'int', width: 0.9 },
         { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 },
         { key: 'late', label: 'Late', type: 'int', width: 0.7 },
         { key: 'missing', label: 'Missing punch', type: 'int', width: 1 },
@@ -457,6 +522,7 @@ function buildIndividual(ctx, rows, period) {
         worked: rs.filter(worked).length,
         day: rs.filter((r) => worked(r) && r.shift.name !== 'Night').length,
         night: rs.filter((r) => worked(r) && r.shift.name === 'Night').length,
+        double: countDoubles(ctx, rs, wk, addDays(wk, 6)),
         hours: round2(rs.reduce((a, r) => a + (r.hoursWorked || 0), 0)),
         late: rs.filter((r) => r.status === 'late').length,
         missing: rs.filter(missingPunch).length,
@@ -473,7 +539,7 @@ function buildIndividual(ctx, rows, period) {
     title: 'Individual worker report',
     subtitle: `${worker.name} (${worker.biostarUserId}) · ${crew}`,
     kpis: [
-      { label: 'Shifts worked', value: String(w), sub: t ? `${t.day} Day / ${t.night} Night` : 'none', tone: 'navy' },
+      { label: 'Shifts worked', value: String(w), sub: t ? `${t.day} Day / ${t.night} Night · ${t.double} double` : 'none', tone: 'navy' },
       { label: 'Hours worked', value: t ? t.hours.toFixed(1) : '0.0', sub: t && t.hoursN ? `avg ${(t.hours / t.hoursN).toFixed(1)} h per shift` : 'no completed shifts', tone: 'teal' },
       { label: 'Punctuality', value: completed ? `${Math.round((t.punctual / completed) * 100)}%` : '-', sub: `${t ? t.punctual : 0} of ${completed} completed shifts`, tone: 'ok' },
       { label: 'Attendance rate', value: w + noShow ? `${Math.round((w / (w + noShow)) * 100)}%` : '-', sub: 'shifts worked / scheduled', tone: 'ok' },
@@ -501,13 +567,22 @@ function buildRegister(ctx, rows, period) {
     w.cells.get(d).push(r);
   }
 
+  // "+" marks a double shift that crosses midnight: N+ is a Night that runs
+  // into the next morning's Day, +D that Day.
   const cellCode = (list) => {
     if (!list) return '';
     const done = list.filter(worked);
     if (done.length === 0) return 'A';
-    const day = done.some((r) => r.shift.name !== 'Night');
-    const night = done.some((r) => r.shift.name === 'Night');
-    return day && night ? 'DN' : night ? 'N' : 'D';
+    const dayRow = done.find((r) => r.shift.name !== 'Night');
+    const nightRow = done.find((r) => r.shift.name === 'Night');
+    const code = dayRow && nightRow ? 'DN' : nightRow ? 'N' : 'D';
+    // In a run, the shift before a Day is always the previous evening's
+    // Night, and the one after a Night the next morning's Day.
+    const dayRun = dayRow && runOf(ctx, dayRow);
+    const nightRun = nightRow && runOf(ctx, nightRow);
+    const fromPrev = dayRun && dayRun.records[0].id !== dayRow.id;
+    const intoNext = nightRun && nightRun.records[nightRun.records.length - 1].id !== nightRow.id;
+    return `${fromPrev ? '+' : ''}${code}${intoNext ? '+' : ''}`;
   };
 
   const out = [...byWorker.values()]
@@ -524,12 +599,13 @@ function buildRegister(ctx, rows, period) {
           hours += r.hoursWorked || 0;
         }
       }
-      Object.assign(row, { dayTotal: day, nightTotal: night, absent, hours: round2(hours) });
+      const double = countDoubles(ctx, dates.flatMap((d) => w.cells.get(d) || []));
+      Object.assign(row, { dayTotal: day, nightTotal: night, double, absent, hours: round2(hours) });
       return row;
     });
 
   const sum = (k) => out.reduce((a, r) => a + (r[k] || 0), 0);
-  const totals = { worker: `${out.length} workers`, dayTotal: sum('dayTotal'), nightTotal: sum('nightTotal'), absent: sum('absent'), hours: round2(sum('hours')) };
+  const totals = { worker: `${out.length} workers`, dayTotal: sum('dayTotal'), nightTotal: sum('nightTotal'), double: sum('double'), absent: sum('absent'), hours: round2(sum('hours')) };
   for (const d of dates) {
     const n = out.filter((r) => r[`d${d}`] && r[`d${d}`] !== 'A').length;
     totals[`d${d}`] = n ? String(n) : '';
@@ -538,22 +614,23 @@ function buildRegister(ctx, rows, period) {
   return {
     title: 'Attendance register',
     landscape: true,
-    kpis: overallKpis(rows),
+    kpis: overallKpis(ctx, rows),
     sections: [{
       title: 'Register',
-      note: 'D = Day shift worked · N = Night shift worked · DN = double shift · A = absent (scheduled, no punches) · blank = not scheduled',
+      note: 'D = Day shift worked · N = Night shift worked · DN = Day + Night double shift · N+ then +D = Night into the next morning\'s Day (double shift) · A = absent (scheduled, no punches) · blank = not scheduled',
       columns: [
         { ...COL.id, width: 1.3 }, { ...COL.worker, width: 3 },
         ...dates.map((d) => ({ key: `d${d}`, label: `${d.slice(8, 10)} ${weekdayOf(d).slice(0, 2)}`, type: 'code', width: 0.5 })),
         { key: 'dayTotal', label: 'Day', type: 'int', width: 0.7 },
         { key: 'nightTotal', label: 'Night', type: 'int', width: 0.75 },
+        { key: 'double', label: 'Double', type: 'int', width: 0.8 },
         { key: 'absent', label: 'Absent', type: 'int', width: 0.9 },
         { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 }
       ],
       rows: out,
       totals
     }],
-    notes: ['The totals row under each date is the number of workers present that day.']
+    notes: ['The totals row under each date is the number of workers present that day.', 'A double shift is two shifts back to back: DN (Day then that evening\'s Night) or N+ / +D (Night then the next morning\'s Day). Each shift adds to the Day or Night total; Double counts each double shift once, on the date it started.']
   };
 }
 
@@ -561,7 +638,7 @@ function buildHours(ctx, rows) {
   const tallies = tallyByWorker(ctx, rows).filter((t) => t.worked > 0 || t.records > 0);
   const out = tallies.map((t) => ({
     id: t.worker.biostarUserId, worker: t.worker.name, crew: t.crew,
-    day: t.day, night: t.night, worked: t.worked, hours: round2(t.hours),
+    day: t.day, night: t.night, double: t.double, worked: t.worked, hours: round2(t.hours), doubleHours: round2(t.doubleHours),
     approvedShifts: t.approvedShifts, approvedHours: round2(t.approvedHours),
     pendingShifts: t.pendingShifts, pendingHours: round2(t.pendingHours), changed: t.changed
   }));
@@ -572,19 +649,22 @@ function buildHours(ctx, rows) {
       { label: 'Workers', value: String(out.length), sub: 'with records in the period', tone: 'navy' },
       { label: 'Shifts worked', value: String(sum('worked')), sub: `${sum('day')} Day / ${sum('night')} Night`, tone: 'navy' },
       { label: 'Hours worked', value: sum('hours').toFixed(1), sub: 'no meal deduction', tone: 'teal' },
+      { label: 'Double shifts', value: String(sum('double')), sub: `${sum('doubleHours').toFixed(1)} h, ${out.filter((r) => r.double).length} worker${out.filter((r) => r.double).length === 1 ? '' : 's'}`, tone: 'teal' },
       { label: 'Approved hours', value: sum('approvedHours').toFixed(1), sub: `${sum('approvedShifts')} approved shifts`, tone: 'ok' },
       { label: 'Awaiting approval', value: sum('pendingHours').toFixed(1), sub: `${sum('pendingShifts')} shifts not yet approved`, tone: 'warn' },
       { label: 'Re-approval needed', value: String(sum('changed')), sub: 'changed after approval', tone: 'critical' }
     ],
     sections: [{
       title: 'Per worker',
-      note: 'A double shift counts as two shifts.',
+      note: 'A double shift (Day + Night on the same date) counts as two shifts. "Double shifts" counts those dates; "Double-shift hours" is the hours worked on them, already included in Total hours.',
       columns: [
         COL.id, COL.worker, COL.crew,
         { key: 'day', label: 'Day shifts', type: 'int', width: 0.8 },
         { key: 'night', label: 'Night shifts', type: 'int', width: 0.8 },
+        { key: 'double', label: 'Double shifts', type: 'int', width: 0.8 },
         { key: 'worked', label: 'Total shifts', type: 'int', width: 0.8 },
         { key: 'hours', label: 'Total hours', type: 'hours', width: 0.9 },
+        { key: 'doubleHours', label: 'Double-shift hours', type: 'hours', width: 0.9 },
         { key: 'approvedShifts', label: 'Approved shifts', type: 'int', width: 0.9 },
         { key: 'approvedHours', label: 'Approved hours', type: 'hours', width: 0.9 },
         { key: 'pendingShifts', label: 'Pending shifts', type: 'int', width: 0.9 },
@@ -593,7 +673,7 @@ function buildHours(ctx, rows) {
       ],
       rows: out,
       totals: {
-        worker: `${out.length} workers`, day: sum('day'), night: sum('night'), worked: sum('worked'), hours: round2(sum('hours')),
+        worker: `${out.length} workers`, day: sum('day'), night: sum('night'), double: sum('double'), worked: sum('worked'), hours: round2(sum('hours')), doubleHours: round2(sum('doubleHours')),
         approvedShifts: sum('approvedShifts'), approvedHours: round2(sum('approvedHours')),
         pendingShifts: sum('pendingShifts'), pendingHours: round2(sum('pendingHours')), changed: sum('changed')
       }
@@ -620,6 +700,22 @@ function buildExceptions(ctx, rows) {
   });
   const multi = sorted.filter((r) => r.hasMultiplePunches).map((r) => ({ ...base(r), checkIn: r.checkIn, checkOut: r.checkOut, status: statusTags(r) }));
   const unscheduled = sorted.filter((r) => r.source === 'unscheduled').map((r) => ({ ...base(r), checkIn: r.checkIn, checkOut: r.checkOut, hours: r.hoursWorked }));
+  // One line per double shift that starts in the period: in from its first
+  // shift, out from its last.
+  const runs = new Map();
+  for (const r of sorted) {
+    const run = runOf(ctx, r);
+    if (run && run.startDate >= ctx.period.from && run.startDate <= ctx.period.to) runs.set(run.id, run);
+  }
+  const doubles = [...runs.values()].map(({ records: rs, label }) => ({
+    ...base(rs[0]),
+    shift: label,
+    checkIn: rs[0].checkIn,
+    checkOut: rs[rs.length - 1].checkOut,
+    hours: round2(rs.reduce((a, r) => a + (r.hoursWorked || 0), 0)),
+    // Implied times are only ever at a changeover between the shifts.
+    changeover: rs.some((r) => r.checkInImplied || r.checkOutImplied) ? 'No badge - split at handover' : 'Badged'
+  }));
 
   const sections = [
     late.length && {
@@ -647,6 +743,12 @@ function buildExceptions(ctx, rows) {
     unscheduled.length && {
       title: 'Unscheduled shifts', note: `${unscheduled.length} shifts worked outside the worker's schedule`,
       columns: [...lead, COL.in, COL.out, COL.hours], rows: unscheduled, totals: null
+    },
+    doubles.length && {
+      title: 'Double shifts', note: `${doubles.length} pairs of shifts worked back to back · ${round2(doubles.reduce((a, r) => a + r.hours, 0))} h in total`,
+      columns: [...lead.map((c) => (c.key === 'shift' ? { ...c, width: 1.5 } : c)), COL.in, COL.out, { ...COL.hours, label: 'Total hours' },
+        { key: 'changeover', label: 'Changeover', type: 'text', width: 1.8 }],
+      rows: doubles, totals: null
     }
   ].filter(Boolean);
 
@@ -675,7 +777,8 @@ function buildExceptions(ctx, rows) {
       { label: 'Missing punches', value: String(missing.length), sub: 'only one side recorded', tone: 'grey' },
       { label: 'Early check-outs', value: String(earlyOut.length), sub: 'left before shift end', tone: 'warn' },
       { label: 'Multiple punches', value: String(multi.length), sub: 'extra badges mid-shift', tone: 'grey' },
-      { label: 'Unscheduled', value: String(unscheduled.length), sub: 'outside the schedule', tone: 'navy' }
+      { label: 'Unscheduled', value: String(unscheduled.length), sub: 'outside the schedule', tone: 'navy' },
+      { label: 'Double shifts', value: String(doubles.length), sub: 'two shifts back to back', tone: 'teal' }
     ],
     sections
   };
@@ -694,6 +797,7 @@ function buildDailyTotals(ctx, rows) {
       date: d,
       day: w.filter((r) => r.shift.name !== 'Night').length,
       night: w.filter((r) => r.shift.name === 'Night').length,
+      double: countDoubles(ctx, list, d, d),
       worked: w.length,
       late: list.filter((r) => r.status === 'late').length,
       missing: list.filter(missingPunch).length,
@@ -705,14 +809,15 @@ function buildDailyTotals(ctx, rows) {
   const sum = (k) => out.reduce((a, r) => a + (r[k] || 0), 0);
   return {
     title: 'Daily headcount report',
-    kpis: overallKpis(rows),
+    kpis: overallKpis(ctx, rows),
     sections: [{
       title: 'Per day',
-      note: `${out.length} day${out.length === 1 ? '' : 's'} · average ${out.length ? Math.round(sum('worked') / out.length) : 0} shifts worked per day`,
+      note: `${out.length} day${out.length === 1 ? '' : 's'} · average ${out.length ? Math.round(sum('worked') / out.length) : 0} shifts worked per day · each shift of a double shift is in the Day or Night count; Double shifts counts those starting that date`,
       columns: [
         { ...COL.date, width: 1.8 },
         { key: 'day', label: 'Day shift', type: 'int', width: 0.8 },
         { key: 'night', label: 'Night shift', type: 'int', width: 0.8 },
+        { key: 'double', label: 'Double shifts', type: 'int', width: 0.9 },
         { key: 'worked', label: 'Total worked', type: 'int', width: 0.9 },
         { key: 'late', label: 'Late', type: 'int', width: 0.6 },
         { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
@@ -722,7 +827,7 @@ function buildDailyTotals(ctx, rows) {
       ],
       rows: out,
       totals: {
-        date: `${out.length} days`, day: sum('day'), night: sum('night'), worked: sum('worked'), late: sum('late'),
+        date: `${out.length} days`, day: sum('day'), night: sum('night'), double: sum('double'), worked: sum('worked'), late: sum('late'),
         missing: sum('missing'), noShow: sum('noShow'), hours: round2(sum('hours')),
         approved: pctOf(rows.filter((r) => r.approvedAt && !r.changedAfterApproval).length, rows.length)
       }
@@ -747,6 +852,7 @@ function buildCrew(ctx, rows) {
       workers: new Set(list.map((r) => r.worker.id)).size,
       scheduled: list.length,
       worked: w.length,
+      double: countDoubles(ctx, list),
       late: list.filter((r) => r.status === 'late').length,
       missing: list.filter(missingPunch).length,
       noShow: list.filter((r) => r.status === 'no-show').length,
@@ -759,6 +865,7 @@ function buildCrew(ctx, rows) {
   const countCols = [
     { key: 'scheduled', label: 'Records', type: 'int', width: 0.7 },
     { key: 'worked', label: 'Worked', type: 'int', width: 0.7 },
+    { key: 'double', label: 'On a double', type: 'int', width: 0.8 },
     { key: 'late', label: 'Late', type: 'int', width: 0.6 },
     { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
     { key: 'noShow', label: 'No-show', type: 'int', width: 0.7 },
@@ -783,7 +890,7 @@ function buildCrew(ctx, rows) {
     const list = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })).map(([k, rs]) => {
       const approvedN = rs.filter((r) => r.approvedAt && !r.changedAfterApproval).length;
       return {
-        date: k.split('|')[0], shift: rs[0].shift.name, scheduled: rs.length, worked: rs.filter(worked).length,
+        date: k.split('|')[0], shift: rs[0].shift.name, scheduled: rs.length, worked: rs.filter(worked).length, double: rs.filter((r) => isDouble(ctx, r)).length,
         late: rs.filter((r) => r.status === 'late').length, missing: rs.filter(missingPunch).length,
         noShow: rs.filter((r) => r.status === 'no-show').length, hours: round2(rs.reduce((a, r) => a + (r.hoursWorked || 0), 0)),
         approval: approvedN === rs.length ? 'Approved' : approvedN === 0 ? 'Pending' : `${approvedN} of ${rs.length} approved`
@@ -795,10 +902,10 @@ function buildCrew(ctx, rows) {
       note: `${list.length} shift${list.length === 1 ? '' : 's'}`,
       columns: [COL.date, COL.shift, ...countCols, COL.approval],
       rows: list,
-      totals: { date: 'Total', scheduled: sum('scheduled'), worked: sum('worked'), late: sum('late'), missing: sum('missing'), noShow: sum('noShow'), hours: round2(sum('hours')) }
+      totals: { date: 'Total', scheduled: sum('scheduled'), worked: sum('worked'), double: countDoubles(ctx, byCrew.get(name)), late: sum('late'), missing: sum('missing'), noShow: sum('noShow'), hours: round2(sum('hours')) }
     });
   }
-  return { title: 'Crew performance report', kpis: overallKpis(rows), sections };
+  return { title: 'Crew performance report', kpis: overallKpis(ctx, rows), sections };
 }
 
 // units: ApprovalUnit rows already limited to the period and the user's scope,
@@ -856,18 +963,28 @@ function buildApprovals(ctx, units) {
   };
 }
 
+// A double shift's clock-out on a later (EAT) day than the line's date is
+// marked "(+1)" in blue by the renderers: row._dayOffset = { checkOut: n }.
+function withNextDayOut(ctx, r, row) {
+  if (!r.checkOut || !(r.parts || isDouble(ctx, r))) return row;
+  const outDay = dateStrOf(new Date(new Date(r.checkOut).getTime() + EAT_OFFSET_MS));
+  const n = Math.round((Date.parse(`${outDay}T00:00:00Z`) - Date.parse(`${row.date}T00:00:00Z`)) / DAY_MS);
+  return n > 0 ? { ...row, _dayOffset: { checkOut: n } } : row;
+}
+
 function buildDetailed(ctx, rows) {
-  const list = [...rows].sort(byDateShiftName);
+  const lines = mergeDoubles([...rows].sort(byDateShiftName));
+  const merged = lines.filter((l) => l.parts).length;
   return {
     title: 'Detailed attendance records',
-    kpis: overallKpis(rows),
+    kpis: overallKpis(ctx, rows),
     landscape: true,
     sections: [{
       title: 'All records',
-      note: `${list.length} record${list.length === 1 ? '' : 's'}`,
-      columns: [COL.date, COL.shift, COL.id, COL.worker, COL.crew, COL.in, COL.out, COL.hours, COL.status, COL.flags, COL.approval],
-      rows: list.map((r) => shiftRecordRow(ctx, r)),
-      totals: { date: `${list.length} records`, hours: round2(list.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
+      note: `${rows.length} shift record${rows.length === 1 ? '' : 's'}${merged ? ` · ${merged === 1 ? '1 Day + Night double shift shown as one line' : `${merged} Day + Night double shifts, each shown as one line`}` : ''}`,
+      columns: [COL.date, { ...COL.shift, width: 1.1 }, COL.id, COL.worker, COL.crew, COL.in, COL.out, COL.hours, COL.status, COL.flags, COL.approval],
+      rows: lines.map((r) => withNextDayOut(ctx, r, shiftRecordRow(ctx, r))),
+      totals: { date: `${rows.filter(worked).length} shifts worked`, hours: round2(rows.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
     }]
   };
 }
@@ -893,24 +1010,28 @@ function buildTimesheet(ctx, rows) {
     const late = list.filter((r) => r.status === 'late' || r.lateIn).length;
     const absent = list.length - done.length;
     const bits = [crewNameOf(ctx, list[list.length - 1]), `${done.length} shift${done.length === 1 ? '' : 's'} worked`, `${hours.toFixed(2)} h`];
+    const doubles = countDoubles(ctx, list);
+    if (doubles) bits.push(`${doubles} double shift${doubles === 1 ? '' : 's'}`);
     if (late) bits.push(`${late} late`);
     if (absent) bits.push(`${absent} absent`);
     out.push({ _group: `${w.name} (${w.biostarUserId})`, _groupNote: bits.join(' · ') });
 
-    for (const r of list) {
-      const s = shiftById.get(r.shift.id);
+    for (const r of mergeDoubles(list)) {
+      // A merged Day + Night line starts with the Day and ends with the Night.
+      const s = shiftById.get((r.parts ? r.parts[0] : r).shift.id);
+      const e = shiftById.get((r.parts ? r.parts[1] : r).shift.id);
       const dateStr = dateStrOf(r.date);
       const lateBy = s && r.checkIn && (r.status === 'late' || r.lateIn)
         ? Math.max(0, Math.round((new Date(r.checkIn).getTime() - eatInstant(dateStr, s.startTime)) / 60000))
         : null;
-      const earlyBy = s && r.checkOut && r.earlyCheckOut
-        ? Math.max(0, Math.round((eatInstant(dateStr, s.endTime, s.endTime <= s.startTime ? 1 : 0) - new Date(r.checkOut).getTime()) / 60000))
+      const earlyBy = e && r.checkOut && r.earlyCheckOut
+        ? Math.max(0, Math.round((eatInstant(dateStr, e.endTime, e.endTime <= e.startTime ? 1 : 0) - new Date(r.checkOut).getTime()) / 60000))
         : null;
-      const badges = (ctx.punchTimes?.get(r.id) || []).map((t) => eatClock(t));
+      const badges = badgesOf(ctx, r).map((t) => eatClock(t));
       out.push({
         id: w.biostarUserId, worker: w.name, date: dateStr, shift: r.shift.name,
         checkIn: r.checkIn, checkOut: r.checkOut, hours: r.hoursWorked, status: statusTags(r),
-        lateBy, earlyBy, badges: badges.join(', '), flags: flagsOf(r)
+        lateBy, earlyBy, badges: badges.join(', '), flags: flagsOf(ctx, r)
       });
     }
   }
@@ -919,7 +1040,7 @@ function buildTimesheet(ctx, rows) {
   return {
     title: 'Clock-in / clock-out timesheet',
     landscape: true,
-    kpis: overallKpis(rows),
+    kpis: overallKpis(ctx, rows),
     sections: [{
       title: 'Timesheet',
       note: `${workers.length} worker${workers.length === 1 ? '' : 's'} · ${rows.length} shift record${rows.length === 1 ? '' : 's'}`,
@@ -927,7 +1048,7 @@ function buildTimesheet(ctx, rows) {
         { ...COL.id, hideInGroups: true },
         { ...COL.worker, hideInGroups: true },
         { ...COL.date, width: 1.4 },
-        { ...COL.shift, width: 0.7 },
+        { ...COL.shift, width: 1 },
         { ...COL.in, width: 0.8 },
         { ...COL.out, width: 0.8 },
         { ...COL.hours, width: 0.7 },
@@ -942,7 +1063,7 @@ function buildTimesheet(ctx, rows) {
     }],
     notes: [
       'Clock in is the first badge of the shift and clock out the last. "All badges" lists every badge the shift captured, including repeats; badges within 5 minutes of each other count as one.',
-      'An implied time is a double shift with no badge at the changeover, split at the scheduled handover time.'
+      'A double shift (two shifts back to back: Day then Night, or Night then the next morning\'s Day) shows as one line per shift, each marked "Double shift". An implied time is a double shift with no badge at the changeover, split at the scheduled handover time.'
     ]
   };
 }
@@ -965,6 +1086,7 @@ function standardNotes(ctx) {
   const shiftLine = ctx.shifts.map((s) => `${s.name} ${s.startTime}-${s.endTime}`).join(', ');
   const grace = ctx.shifts[0]?.graceMinutes ?? 30;
   return [
+    'A double shift is two shifts worked back to back: a Day and that evening\'s Night, or a Night and the next morning\'s Day. Each is its own record and counts as a shift; the double shift is counted once, on the date it started.',
     `Times are East Africa Time (EAT, UTC+3). Shifts: ${shiftLine}. Night shifts are dated by the evening they start.`,
     `Late means checking in more than ${grace} minutes after the shift start. Hours are check-in to check-out with no meal deduction.`,
     'Approved records are locked; "Changed after approval" means new punches arrived since, and the approved values stand until re-approved.'
@@ -981,7 +1103,19 @@ function standardNotes(ctx) {
 function buildReport(type, ctx, data, period) {
   const builder = BUILDERS[type];
   if (!builder) return { error: 'Unknown report.' };
-  const model = builder(ctx, data, period);
+  if (type === 'approvals') return finish(type, ctx, builder(ctx, data, period), period);
+  // Double shifts are found in ctx.doubleRows when the route supplies them —
+  // the period plus a day either side and every shift, so one crossing the
+  // period's edge or half-hidden by a shift filter is still recognised. A
+  // same-date Day + Night pair's hours are shared between its two shifts
+  // (normalizeDoubles), and the report's rows are those same adjusted records.
+  const wide = normalizeDoubles(ctx.doubleRows || data);
+  const byId = new Map(wide.map((r) => [r.id, r]));
+  const rows = ctx.doubleRows ? data.map((r) => byId.get(r.id) || r) : wide;
+  return finish(type, ctx, builder({ ...ctx, period, doubles: doubleShiftRuns(wide) }, rows, period), period);
+}
+
+function finish(type, ctx, model, period) {
   if (model.error) return model;
   return {
     type,
@@ -1004,6 +1138,7 @@ module.exports = {
   STATUS_LABEL,
   TAG_LABEL,
   statusTags,
+  doubleShiftRuns,
   fmtDay,
   weekdayOf,
   eatClock,

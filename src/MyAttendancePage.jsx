@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatDateLabel, formatTime, todayEat } from './api';
 import { statusTags } from './shiftStatus';
+import { doubleShiftRuns, countDoubleShifts, doubleShiftTitle, normalizeDoubles, mergeDoubles } from './doubleShift';
 import StatusTags from './StatusTags';
 import PunchHistoryModal from './PunchHistoryModal';
 import { usePagination } from './Pagination';
@@ -17,6 +18,13 @@ function monthRange(offset) {
 }
 
 function approvalLabel(r) {
+  // A Day + Night double shift: each shift is approved by its own supervisor.
+  if (r.parts) {
+    const [a, b] = r.parts.map(approvalLabel);
+    if (a.key === b.key) return a;
+    if (a.key === 'changed' || b.key === 'changed') return { key: 'changed', label: 'Changed after approval' };
+    return { key: 'pending', label: `${a.key === 'approved' ? 'Day' : 'Night'} approved, ${a.key === 'approved' ? 'Night' : 'Day'} waiting` };
+  }
   if (r.changedAfterApproval) return { key: 'changed', label: 'Changed after approval' };
   return r.approvedAt ? { key: 'approved', label: 'Approved' } : { key: 'pending', label: 'Waiting for approval' };
 }
@@ -41,7 +49,11 @@ export default function MyAttendancePage({ api, token, user }) {
       .finally(() => setLoading(false));
   }, [api, range]);
 
-  const { sorted, th, sortKey } = useSort(rows, {
+  // A Day + that evening's Night is one line (Day's clock-in to Night's
+  // clock-out); the cards count the two shifts on their own.
+  const records = useMemo(() => normalizeDoubles(rows), [rows]);
+  const lines = useMemo(() => mergeDoubles(records), [records]);
+  const { sorted, th, sortKey } = useSort(lines, {
     date: { get: (r) => r.date, first: 'desc' },
     shift: (r) => r.shift.name,
     in: (r) => r.checkIn,
@@ -52,19 +64,20 @@ export default function MyAttendancePage({ api, token, user }) {
   });
   const { pageItems, pager } = usePagination(sorted, { id: 'my-attendance', defaultSize: 25, noun: 'shifts', resetKey: `${range.from}|${range.to}|${sortKey}` });
 
-  const worked = rows.filter((r) => r.status !== 'no-show');
-  const hours = rows.reduce((a, r) => a + (r.hoursWorked || 0), 0);
-  const tagged = rows.map(statusTags);
+  const worked = records.filter((r) => r.status !== 'no-show');
+  const doubles = useMemo(() => doubleShiftRuns(records), [records]);
+  const hours = records.reduce((a, r) => a + (r.hoursWorked || 0), 0);
+  const tagged = records.map(statusTags);
   const lateIn = tagged.filter((t) => t.includes('late-in')).length;
   const earlyOut = tagged.filter((t) => t.includes('early-out')).length;
-  const approved = rows.filter((r) => r.approvedAt && !r.changedAfterApproval).length;
+  const approved = records.filter((r) => r.approvedAt && !r.changedAfterApproval).length;
 
   const cards = [
-    { label: 'Shifts worked', value: worked.length, sub: `${worked.filter((r) => r.shift.name !== 'Night').length} Day · ${worked.filter((r) => r.shift.name === 'Night').length} Night`, tone: 'navy' },
-    { label: 'Hours', value: hours.toFixed(1), sub: worked.length ? `avg ${(hours / Math.max(1, rows.filter((r) => r.hoursWorked != null).length)).toFixed(1)} h per shift` : 'no completed shifts', tone: 'ok' },
+    { label: 'Shifts worked', value: worked.length, sub: `${worked.filter((r) => r.shift.name !== 'Night').length} Day · ${worked.filter((r) => r.shift.name === 'Night').length} Night · ${countDoubleShifts(doubles)} double`, tone: 'navy' },
+    { label: 'Hours', value: hours.toFixed(1), sub: worked.length ? `avg ${(hours / Math.max(1, records.filter((r) => r.hoursWorked != null).length)).toFixed(1)} h per shift` : 'no completed shifts', tone: 'ok' },
     { label: 'Late in', value: lateIn, sub: 'checked in after the grace period', tone: 'warn' },
     { label: 'Early out', value: earlyOut, sub: 'left before the shift ended', tone: 'critical' },
-    { label: 'Approved', value: `${approved} / ${rows.length}`, sub: 'shifts approved so far', tone: 'grey' }
+    { label: 'Approved', value: `${approved} / ${records.length}`, sub: 'shifts approved so far', tone: 'grey' }
   ];
 
   return (
@@ -123,7 +136,19 @@ export default function MyAttendancePage({ api, token, user }) {
                 return (
                   <tr key={r.id} className="is-clickable" tabIndex={0} onClick={() => setSelected(r)} onKeyDown={(e) => { if (e.key === 'Enter') setSelected(r); }}>
                     <td className="mono">{formatDateLabel(r.date)}</td>
-                    <td><span className={`chip ${r.shift.name === 'Night' ? 'chip--night' : 'chip--day'}`}>{r.shift.name}</span></td>
+                    <td>
+                      {r.parts ? (
+                        <>
+                          <span className="chip chip--day">Day</span><span className="chip chip--night">Night</span>
+                          <span className="tag tag--double" title="You worked the Day and the Night back to back — 2 shifts, shown as one line.">Double shift · 2 shifts</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`chip ${r.shift.name === 'Night' ? 'chip--night' : 'chip--day'}`}>{r.shift.name}</span>
+                          {doubles.has(r.id) && <span className="tag tag--double" title={doubleShiftTitle(doubles.get(r.id))}>Double shift</span>}
+                        </>
+                      )}
+                    </td>
                     <td className="mono">{formatTime(r.checkIn)}</td>
                     <td className="mono">{formatTime(r.checkOut)}</td>
                     <td className="mono">{r.hoursWorked ?? '—'}</td>

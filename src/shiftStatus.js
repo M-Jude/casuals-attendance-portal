@@ -50,3 +50,4 @@ export function isGuessed(row) {
   return row?.source === 'unscheduled' && (!row.checkIn || !row.checkOut);
 }
 export const GUESSED_TITLE = 'Only one badge and no schedule for this date — the shift was guessed from the worker’s usual pattern (or the time of day). Check it, and record an exception if it’s wrong.';
+

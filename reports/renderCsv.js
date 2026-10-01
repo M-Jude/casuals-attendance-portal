@@ -5,7 +5,7 @@
 // database values. UTF-8 with a BOM and CRLF line ends so Excel opens it
 // with the right encoding.
 
-const { formatCell, generatedStamp } = require('./reportFormat');
+const { formatCell, generatedStamp, dayMark } = require('./reportFormat');
 
 function esc(value) {
   const s = String(value ?? '');
@@ -54,7 +54,7 @@ function renderCsv(model, meta) {
         out.push(line([row._group, row._groupNote || '']));
         return;
       }
-      out.push(line(section.columns.map((c) => formatCell(c, row[c.key]))));
+      out.push(line(section.columns.map((c) => [formatCell(c, row[c.key]), dayMark(row, c.key)].filter(Boolean).join(' '))));
     });
     if (section.totals) {
       out.push(line(section.columns.map((c, i) => {

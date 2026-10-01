@@ -3,7 +3,8 @@ const { Parser } = require('json2csv');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { summaryVisibility } = require('../middleware/requireRole');
-const { statusTags, TAG_LABEL } = require('../reports/reportCatalog');
+const { statusTags, TAG_LABEL, addDays } = require('../reports/reportCatalog');
+const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('../reports/doubleShift');
 const { downloadStamp } = require('../services/audit');
 
 const router = express.Router();
@@ -17,6 +18,11 @@ function eatTime(date) {
 }
 
 function approvalState(row) {
+  // A merged Day + Night line: each shift is approved by its own supervisor.
+  if (row.parts) {
+    const states = row.parts.map(approvalState);
+    return states[0] === states[1] ? states[0] : row.parts.map((p, i) => `${p.shift.name} ${states[i]}`).join(', ');
+  }
   if (row.changedAfterApproval) return 'changed after approval';
   return row.approvedAt ? 'approved' : 'pending';
 }
@@ -30,29 +36,39 @@ router.get('/attendance/export', authenticate, async (req, res) => {
   }
 
   try {
-    const rows = await prisma.dailyAttendanceSummary.findMany({
+    // A day either side too, only to recognise double shifts (two shifts
+    // back to back) that cross the range's edge.
+    const wide = await prisma.dailyAttendanceSummary.findMany({
       where: {
-        date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+        date: { gte: new Date(`${addDays(from, -1)}T00:00:00.000Z`), lte: new Date(`${addDays(to, 1)}T00:00:00.000Z`) },
         ...summaryVisibility(req.user)
       },
       include: {
-        worker: { select: { name: true, biostarUserId: true } },
-        shift: { select: { name: true } }
+        worker: { select: { id: true, name: true, biostarUserId: true } },
+        shift: { select: { id: true, name: true } }
       },
       orderBy: [{ date: 'asc' }, { shiftId: 'asc' }, { worker: { name: 'asc' } }]
     });
+    // A same-date Day + Night double shift is one line, from the Day's
+    // clock-in to the Night's clock-out.
+    const normalized = normalizeDoubles(wide);
+    const rows = mergeDoubles(normalized.filter((r) => { const d = r.date.toISOString().slice(0, 10); return d >= from && d <= to; }));
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'No records found for this date range.' });
     }
 
+    // Part of two shifts worked back to back: "Day + Night", "Night + next Day".
+    const doubles = doubleShiftRuns(normalized);
     const parser = new Parser({
-      fields: ['date', 'shift', 'employee_id', 'worker_name', 'check_in', 'check_out', 'hours_worked', 'regular_hours',
+      fields: ['date', 'shift', 'shifts_worked', 'double_shift', 'employee_id', 'worker_name', 'check_in', 'check_out', 'hours_worked', 'regular_hours',
         'status', 'source', 'approval', 'approved_at', 'supervisor_comment']
     });
     const csv = parser.parse(rows.map((r) => ({
       date: r.date.toISOString().slice(0, 10),
       shift: r.shift.name,
+      shifts_worked: r.parts ? 2 : r.status === 'no-show' ? 0 : 1,
+      double_shift: doubles.get((r.parts ? r.parts[0] : r).id)?.label || '',
       employee_id: r.worker.biostarUserId,
       worker_name: r.worker.name,
       check_in: eatTime(r.checkIn) + (r.checkInImplied ? ' (implied)' : ''),

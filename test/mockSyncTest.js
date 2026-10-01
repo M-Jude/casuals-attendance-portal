@@ -17,9 +17,9 @@ let nextWorkerId = 1;
 // ---- Fake AttendanceLog table (in-memory) ----
 let fakeAttendanceLogs = [];
 
-// A minimal fake $transaction: just runs the callback against the same fake
-// client (no real isolation needed for this test — we're only checking the
-// resulting rows, not crash-recovery behavior).
+// A minimal fake $transaction: awaits a batch of operations, or runs a
+// callback against the same fake client (no real isolation needed for this
+// test — we're only checking the resulting rows, not crash-recovery behavior).
 const fakeTxClient = {
   casualWorker: {
     findUnique: async ({ where }) =>
@@ -49,7 +49,7 @@ const fakeNotifications = [];
 const inIds = (where, id) => !where?.id?.in || where.id.in.includes(id);
 
 const fakePrisma = {
-  $transaction: async (fn) => fn(fakeTxClient),
+  $transaction: async (arg) => (Array.isArray(arg) ? Promise.all(arg) : arg(fakeTxClient)),
   portalUser: {
     findMany: async ({ where }) => fakeAccounts
       .filter((a) => (where.active === undefined || a.active === where.active)
@@ -67,6 +67,7 @@ const fakePrisma = {
     findMany: async ({ where }) => fakeAttendanceLogs
       .filter((r) => !where?.biostarEventId?.in || where.biostarEventId.in.includes(r.biostarEventId))
       .map((r) => ({ biostarEventId: r.biostarEventId, timestamp: r.timestamp })),
+    upsert: (args) => fakeTxClient.attendanceLog.upsert(args),
     findFirst: async () => {
       if (fakeAttendanceLogs.length === 0) return null;
       return fakeAttendanceLogs.reduce((latest, row) =>
@@ -75,7 +76,8 @@ const fakePrisma = {
     }
   },
   casualWorker: {
-    findMany: async ({ where } = {}) => fakeCasualWorkers.filter((w) => !where?.status || w.status === where.status),
+    findMany: async ({ where } = {}) => fakeCasualWorkers.filter((w) => (!where?.status || w.status === where.status)
+      && (!where?.biostarUserId?.in || where.biostarUserId.in.includes(w.biostarUserId))),
     updateMany: async ({ where, data }) => {
       const hit = fakeCasualWorkers.filter((w) => inIds(where, w.id));
       hit.forEach((w) => Object.assign(w, data));

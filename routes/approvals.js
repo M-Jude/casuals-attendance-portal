@@ -5,6 +5,7 @@ const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { canApprove, escalationDueAt } = require('../sync/approvalLogic');
 const { dateStrOf } = require('../sync/scheduleResolver');
+const { normalizeDoubles } = require('../reports/doubleShift');
 
 const router = express.Router();
 const APPROVERS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
@@ -99,6 +100,43 @@ async function loadVisibleUnit(user, id) {
   return unit;
 }
 
+// Marks each row that is half of a same-date Day + Night double shift with
+// `double`: the other shift (which its own supervisor approves), this
+// shift's share of the hours and the double's total, first clock-in and
+// last clock-out — so the approver can see the worker really worked both.
+async function describeDoubles(rows, key) {
+  if (rows.length === 0) return;
+  const dates = rows.map((r) => r.date.getTime());
+  const partners = await prisma.dailyAttendanceSummary.findMany({
+    where: {
+      casualWorkerId: { in: [...new Set(rows.map((r) => r.casualWorkerId))] },
+      date: { gte: new Date(Math.min(...dates)), lte: new Date(Math.max(...dates)) },
+      NOT: { approvalKey: key }
+    },
+    include: { worker: { select: { id: true, name: true, biostarUserId: true } }, shift: { select: { id: true, name: true } } }
+  });
+  const normalized = new Map(normalizeDoubles([...rows, ...partners]).map((r) => [r.id, r]));
+  const crewIds = [...new Set(partners.map((p) => p.approvalCrewId).filter(Boolean))];
+  const crews = new Map((await prisma.crew.findMany({ where: { id: { in: crewIds } } })).map((c) => [c.id, c.name]));
+  for (const r of rows) {
+    const n = normalized.get(r.id);
+    if (!n?.double) continue;
+    const partner = normalized.get(n.double.partnerId);
+    const [day, night] = n.double.part === 'Day' ? [n, partner] : [partner, n];
+    r.double = {
+      part: n.double.part,
+      partnerShift: partner.shift.name,
+      partnerApprover: partner.approvalCrewId ? `${crews.get(partner.approvalCrewId) || 'its crew'}'s supervisor` : 'HR',
+      partnerApproved: !!partner.approvedAt && !partner.changedAfterApproval,
+      shareHours: n.hoursWorked,
+      totalHours: n.double.totalHours,
+      changeover: n.double.changeover,
+      checkIn: day.checkIn,
+      checkOut: night.checkOut
+    };
+  }
+}
+
 router.get('/approvals/:id', authenticate, requireRole(...APPROVERS), async (req, res) => {
   try {
     const unit = await loadVisibleUnit(req.user, parseInt(req.params.id, 10));
@@ -112,6 +150,7 @@ router.get('/approvals/:id', authenticate, requireRole(...APPROVERS), async (req
       },
       orderBy: [{ date: 'asc' }, { worker: { name: 'asc' } }]
     });
+    await describeDoubles(rows, unit.key);
     const approver = unit.approvedById
       ? await prisma.portalUser.findUnique({ where: { id: unit.approvedById }, select: { name: true, role: true } })
       : null;

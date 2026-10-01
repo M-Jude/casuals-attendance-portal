@@ -152,11 +152,13 @@ function ReportTable({ section, hidden, printing }) {
                   return <td key={c.key}><StatusTags tags={String(v || '').split(',').filter(Boolean)} /></td>;
                 }
                 if (c.type === 'code') {
-                  return <td key={c.key} className="num">{v ? <span className={`code code--${v}`}>{v}</span> : ''}</td>;
+                  // N+ / +D (a double shift across midnight) share the DN style.
+                  return <td key={c.key} className="num">{v ? <span className={`code code--${v.includes('+') ? 'DN' : v}`}>{v}</span> : ''}</td>;
                 }
                 return (
                   <td key={c.key} className={`${isNumeric(c) ? 'num mono' : ''} ${c.type === 'id' ? 'mono muted' : ''} ${c.key === 'worker' ? 'strong' : ''}`}>
                     {formatCell(c, v)}
+                    {r._dayOffset?.[c.key] ? <span className="day-mark" title="Clocked out the next day (double shift)"> (+{r._dayOffset[c.key]})</span> : null}
                   </td>
                 );
               })}

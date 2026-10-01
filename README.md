@@ -150,6 +150,25 @@ minutes are one event. Consequences:
 - A double shift is two rows. One badge at the changeover ends the first
   shift and starts the second; with no changeover badge the split is made at
   the scheduled time and flagged "implied".
+- **Double shifts** are any two shifts worked back to back: a Day and that
+  evening's Night, or a Night and the next morning's Day (a no-show breaks
+  the run; Day + Night + next Day is one double). Each counts as a shift and
+  the double once, on the date it started (`reports/doubleShift.js`,
+  mirrored in `src/doubleShift.js`).
+  - **Day + Night on the same date is shown as one line**, "Day + Night",
+    from the Day's clock-in to the Night's clock-out, with the hours between
+    them (gaps at the changeover included). It stays on the Day's date even
+    though the Night ends the next morning, so a Night of 30 Sep belongs to
+    September. Underneath, the two shifts stay separate stored records, each
+    approved by its own crew's supervisor (the approval screen shows the
+    other half); the hours are shared between them at the changeover.
+  - **Night + the next morning's Day** stays two lines, each on its own date.
+
+  Reports look a day past each end of the period (and across a shift filter)
+  to find doubles. They're tagged on the dashboard and My attendance (with a
+  "Double shifts only" filter), counted in every report (register `DN` /
+  `N+` `+D`, hours & payroll with double-shift hours, an Exceptions section,
+  …) and marked in the CSV/PDF downloads.
 - A worker with no confirmed schedule is judged against the pattern the
   nightly profiling found for them (rows marked `suggested`) until HR
   confirms it in Pattern review.
@@ -368,6 +387,86 @@ engine with it and counting complete shifts versus unexplained punches.
   and change date is created and the System Admin is notified. Applying it
   adds a new effective-dated rotation; earlier dates keep the old one.
   One worker swapping doesn't trigger it.
+
+## Deploying on Windows Server
+
+In production IIS is the only thing users talk to: it serves the built app
+from `dist/` over HTTPS and reverse-proxies `/api` to the Node API, which
+listens on localhost only. `public/web.config` (copied into `dist/` by the
+build) holds the rewrite rules.
+
+```
+Browser --HTTPS 443--> IIS (dist/ + /api proxy) --HTTP--> Node API 127.0.0.1:4000 --> MySQL, BioStar
+```
+
+1. **Install** Node.js LTS, MySQL (or point `DATABASE_URL` at an existing
+   server), IIS with the **URL Rewrite** and **Application Request Routing**
+   modules.
+2. **Configure ARR** (once per server, elevated prompt):
+   ```bat
+   %windir%\system32\inetsrv\appcmd set config -section:system.webServer/proxy /enabled:true /preserveHostHeader:true /includePortInXFF:false /timeout:00:05:00 /commit:apphost
+   ```
+   `includePortInXFF:false` keeps client IPs in the audit log clean; the
+   5-minute timeout covers a manual sync (`POST /api/attendance/sync`), which
+   waits for the whole BioStar pull and recompute.
+3. **Install and build** in the deployment folder (e.g. `C:\apps\casuals-portal`):
+   ```bat
+   npm ci
+   npx prisma migrate deploy
+   npx prisma generate
+   npm run build
+   ```
+4. **`.env` for production** — as in Setup, plus:
+   - `HOST=127.0.0.1` so the API can't be reached except through IIS.
+   - `PORT=4000` — must match the proxy target in `public/web.config`.
+   - `APP_BASE_URL=https://<public host name>` for email links.
+   - A long random `JWT_SECRET` (not the dev one).
+   - Remove `BIOSTAR_SKIP_TLS_VERIFY`; set `BIOSTAR_CA_CERT` instead.
+5. **Run the API as a Windows service** so it starts with the server and
+   restarts if it crashes — e.g. with [NSSM](https://nssm.cc):
+   ```bat
+   nssm install CasualsPortalApi "C:\Program Files\nodejs\node.exe" server.js
+   nssm set CasualsPortalApi AppDirectory C:\apps\casuals-portal
+   nssm set CasualsPortalApi AppStdout C:\apps\casuals-portal\logs\api.log
+   nssm set CasualsPortalApi AppStderr C:\apps\casuals-portal\logs\api-error.log
+   nssm set CasualsPortalApi AppRotateFiles 1
+   nssm start CasualsPortalApi
+   ```
+   `AppDirectory` matters: `.env` is read from the working directory. Run
+   only one instance — the cron jobs and login rate limiter live in-process.
+6. **IIS site**: physical path `C:\apps\casuals-portal\dist`, HTTPS binding
+   on 443 with the site's host name and certificate (e.g. Let's Encrypt via
+   [win-acme](https://www.win-acme.com), which also renews it), plus an HTTP
+   binding on 80 that `web.config` redirects to HTTPS.
+7. **Firewall**: allow inbound 443 (and 80 for the redirect / certificate
+   validation). Never expose 4000 (API) or 3306 (MySQL).
+
+HTTPS is required, not optional: the installable phone app and its service
+worker only work over HTTPS, and passwords and tokens cross the internet.
+
+**Updating**: pull the new code, `npm ci`, `npx prisma migrate deploy`,
+stop the service, `npx prisma generate`, `npm run build`, start the service.
+
+### Access from outside the office
+
+The portal only needs to be reachable on 443 at a host name; pick one with
+the network/IT team:
+
+- **Publish through the firewall** (recommended for phone users): a public
+  DNS name (e.g. `casuals.<domain>`) pointing at the firewall, with 443 NATed
+  to this server — ideally in a DMZ that can reach only MySQL and BioStar.
+  Users just open the URL; no client software.
+- **Cloudflare Tunnel**: `cloudflared` on this server makes an outbound
+  connection, so no inbound ports or public IP are needed; Cloudflare Access
+  can add an extra sign-in (e.g. email one-time code) in front of the portal.
+  Point the tunnel at `https://localhost` (or drop the HTTPS redirect rule).
+- **Existing VPN**: nothing is exposed publicly, but every user (including
+  supervisors on phones) needs the VPN client connected.
+
+Once it's on the internet, the portal's own password is the only barrier
+(failed logins are rate-limited, but there's no MFA): enforce strong
+passwords, disable leavers promptly, and check the audit log for sign-in
+failures.
 
 ## Notes / resolved and outstanding
 

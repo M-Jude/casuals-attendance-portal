@@ -4,6 +4,8 @@
 // the downloaded PDF report always agree on the same numbers for the same rows —
 // keep the two in sync if either changes.
 
+import { doubleShiftRuns, countDoubleShifts } from './doubleShift';
+
 export const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-checkin', 'no-show', 'in-progress'];
 
 const dateStrOf = (row) => row.date.slice(0, 10);
@@ -66,6 +68,7 @@ export function computeAnalytics(rows) {
     multiPunch,
     unscheduled,
     unapproved,
+    doubleShifts: countDoubleShifts(doubleShiftRuns(rows)),
     byShift,
     days: [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     attention

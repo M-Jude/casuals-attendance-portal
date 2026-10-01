@@ -5,7 +5,7 @@
 
 const ExcelJS = require('exceljs');
 const { TAG_LABEL, fmtDay } = require('./reportCatalog');
-const { generatedStamp } = require('./reportFormat');
+const { generatedStamp, formatCell, dayMark, DAY_MARK_COLOR } = require('./reportFormat');
 
 const COLORS = {
   navy: 'FF0F1B2C',
@@ -55,7 +55,7 @@ const NUM_FMT = {
 };
 
 function colWidth(col, rows) {
-  const base = { date: 16, time: 8, datetime: 18, hours: 9, pct: 11, int: 8, minutes: 12, status: 13, code: 5, id: 13 }[col.type];
+  const base = { date: 16, time: rows.some((r) => r._dayOffset?.[col.key]) ? 12 : 8, datetime: 18, hours: 9, pct: 11, int: 8, minutes: 12, status: 13, code: 5, id: 13 }[col.type];
   const longest = Math.max(col.label.length, ...rows.slice(0, 500).map((r) => String(r[col.key] ?? '').length));
   if (col.type === 'text') return Math.min(48, Math.max(10, longest + 2));
   return Math.max(base || 10, col.type === 'code' ? 5 : Math.min(col.label.length + 2, 16));
@@ -218,12 +218,21 @@ function writeSection(wb, section, model, meta, used) {
         cell.font = { bold: true, color: { argb: fg } };
         cell.fill = fill(bg);
       }
-      if (c.type === 'code' && CODE_FILL[row[c.key]]) {
-        const [fg, bg] = CODE_FILL[row[c.key]];
+      // N+ / +D (a double shift across midnight) share the DN colours.
+      const code = c.type === 'code' && String(row[c.key] || '').includes('+') ? 'DN' : row[c.key];
+      if (c.type === 'code' && CODE_FILL[code]) {
+        const [fg, bg] = CODE_FILL[code];
         cell.font = { bold: true, color: { argb: fg } };
         cell.fill = fill(bg);
       }
       if (c.key === 'worker') cell.font = { bold: true };
+      // A double shift's next-day clock-out: the time, then a blue "(+1)".
+      if (dayMark(row, c.key)) {
+        cell.value = { richText: [
+          { text: `${formatCell(c, row[c.key])} ` },
+          { text: dayMark(row, c.key), font: { bold: true, color: { argb: `FF${DAY_MARK_COLOR.slice(1)}` } } }
+        ] };
+      }
     });
   });
 

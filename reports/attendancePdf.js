@@ -9,6 +9,7 @@
 // check marks, etc. — icons are drawn as vector paths instead).
 
 const PDFDocument = require('pdfkit');
+const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('./doubleShift');
 
 const TZ = 'Africa/Kampala';
 const PAGE_W = 595.28;
@@ -166,7 +167,9 @@ function groupRows(rows, groupBy) {
 
 // Mirrored by src/attendanceStats.js's computeAnalytics() for the
 // dashboard's on-screen analytics panel — keep the two in sync.
-function computeStats(rows) {
+// rows may carry doubleRun (set by buildAttendanceReport); double shifts
+// are counted once, and only those starting in the range.
+function computeStats(rows, from, to) {
   const counts = countByStatus(rows);
   const workers = new Set();
   const byDate = new Map();
@@ -223,6 +226,7 @@ function computeStats(rows) {
     multiPunch,
     unscheduled,
     unapproved,
+    doubleShifts: new Set(rows.filter((r) => r.doubleRun && (!from || r.doubleRun.startDate >= from) && (!to || r.doubleRun.startDate <= to)).map((r) => r.doubleRun.id)).size,
     byShift,
     days: [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])),
     attention
@@ -334,7 +338,7 @@ function drawKpis(doc, y, stats) {
   const punctuality = stats.completed ? `${pct(stats.punctual, stats.completed)}%` : '-';
 
   const cards = [
-    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'}`, color: C.navy2 },
+    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'} - ${stats.doubleShifts} double shift${stats.doubleShifts === 1 ? '' : 's'}`, color: C.navy2 },
     { label: 'WORKERS', value: String(stats.workers), sub: 'with attendance in range', color: C.navy2 },
     { label: 'COMPLETED SHIFTS', value: String(stats.completed), sub: `${pct(stats.completed, stats.total)}% of records have in + out`, color: C.teal },
     { label: 'HOURS WORKED', value: stats.hoursTotal.toFixed(1), sub: stats.completed ? `avg ${stats.hoursAvg.toFixed(1)} h per shift` : 'no completed shifts', color: C.teal },
@@ -523,7 +527,7 @@ function detailCols(showDate) {
     { key: 'id', label: 'EMPLOYEE ID', w: 66 },
     { key: 'name', label: 'WORKER', w: showDate ? 126 : 170 },
     ...(showDate ? [{ key: 'date', label: 'DATE', w: 48 }] : []),
-    { key: 'shift', label: 'SHIFT', w: 50 },
+    { key: 'shift', label: 'SHIFT', w: 58 },
     { key: 'in', label: 'IN', w: 38 },
     { key: 'out', label: 'OUT', w: 38 },
     { key: 'hours', label: 'HRS', w: 36 },
@@ -562,14 +566,20 @@ function drawDetailRow(doc, y, row, cols, i) {
   const mid = y + rowH / 2;
 
   const allFlags = [];
-  if (row.changedAfterApproval) allFlags.push('Changed after approval');
+  // A merged Day + Night line: each shift has its own supervisor's approval.
+  const unapproved = (row.parts || [row]).filter((p) => p.changedAfterApproval || !p.approvedAt);
+  if (row.parts && unapproved.length === 1) {
+    allFlags.push(unapproved[0].changedAfterApproval ? `${unapproved[0].shift.name} changed after approval` : `${unapproved[0].shift.name} not yet approved`);
+  } else if (row.changedAfterApproval) allFlags.push('Changed after approval');
   else if (!row.approvedAt) allFlags.push('Not yet approved');
   if (row.hasMultiplePunches) allFlags.push('Multiple punches');
   if (row.checkInImplied || row.checkOutImplied) allFlags.push('Implied time');
   // Two lines fit in a row; the rest are summarised.
   const flags = allFlags.length > 2 ? [allFlags[0], `${allFlags[1]} +${allFlags.length - 2}`] : allFlags;
   const guessed = row.source === 'unscheduled' && (!row.checkIn || !row.checkOut);
-  const sourceNote = guessed ? 'shift guessed' : { exception: 'exception', unscheduled: 'unscheduled', suggested: 'schedule not confirmed' }[row.source] || null;
+  const otherNote = guessed ? 'shift guessed' : { unscheduled: 'unscheduled', suggested: 'schedule not confirmed', ...(row.doubleRun ? {} : { exception: 'exception' }) }[row.source] || null;
+  const doubleNote = row.parts ? 'double - 2 shifts' : row.doubleRun ? `double (${row.doubleRun.label})` : null;
+  const sourceNote = doubleNote ? `${doubleNote}${otherNote ? `, ${otherNote}` : ''}` : otherNote;
 
   let x = M;
   for (const col of cols) {
@@ -588,7 +598,7 @@ function drawDetailRow(doc, y, row, cols, i) {
       case 'shift':
         if (sourceNote) {
           txt(doc, row.shift.name, px, mid - 8, { size: 7.8, color: C.ink });
-          txt(doc, fit(doc, sourceNote, inner, 'Helvetica', 5.8), px, mid + 1.2, { size: 5.8, color: STATUS.late.fg });
+          txt(doc, fit(doc, sourceNote, inner, 'Helvetica', 5.8), px, mid + 1.2, { size: 5.8, color: row.doubleRun ? C.tealDark : STATUS.late.fg });
         } else {
           txt(doc, row.shift.name, px, mid - 4, { size: 7.8, color: C.ink });
         }
@@ -627,6 +637,8 @@ function drawDetailRow(doc, y, row, cols, i) {
 function groupCountsText(rows) {
   const c = countByStatus(rows);
   const bits = [`${rows.length} record${rows.length === 1 ? '' : 's'}`];
+  const doubles = new Set(rows.filter((r) => r.doubleRun).map((r) => r.doubleRun.id)).size;
+  if (doubles) bits.push(`${doubles} double shift${doubles === 1 ? '' : 's'}`);
   if (c.late) bits.push(`${c.late} late`);
   if (c['no-checkout']) bits.push(`${c['no-checkout']} no checkout`);
   if (c['no-checkin']) bits.push(`${c['no-checkin']} no check-in`);
@@ -705,6 +717,7 @@ function drawNotes(doc, cur, shifts) {
     ['No check-in', 'A check-out was recorded but no check-in for that shift.'],
     ['No-show', 'The worker was scheduled for the shift (crew rotation, permanent schedule or a supervisor exception) but has no punches for it.'],
     ['Status', 'The Status column shows only "Late in" (checked in after the grace period) and "Early out" (left before the scheduled shift end), or both. It is blank for every other record.'],
+    ['Double shift', 'Two shifts worked back to back. A Day and that evening\'s Night is one line, "Day + Night", from the Day\'s clock-in to the Night\'s clock-out (the Night stays on the Day\'s date even when it ends the next morning); it counts as 2 shifts and 1 double shift. A Night and the next morning\'s Day stay two lines, each on its own date, marked "double". Each shift is approved by its own crew\'s supervisor.'],
     ['Flags', `"Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
     ['Hours', 'Check-out minus check-in. No meal or break deduction and no overtime rules are applied.'],
     ['Approval', `Records are approved by the crew's supervisor after each shift (escalated to HR and the Admin Assistant after 48 hours), or by HR at month end for permanent staff. Approved records are locked; later changes show as "Changed after approval" until re-approved.`],
@@ -759,9 +772,11 @@ function drawFooter(doc, meta, page, pages) {
  * @param {Array}    opts.shifts  Shift rows, for the legend and shift split
  * @param {object}   opts.meta    { subcontractorName, from, to (YYYY-MM-DD), generatedAt: Date,
  *                                  filters: { id, name }, sortBy, groupBy }
+ * @param {Array}    [opts.doubleRows] rows to find double shifts in — the range plus a
+ *                                  day either side, so ones crossing its edge are seen
  * @returns {PDFDocument} an ended document — pipe it to the response
  */
-function buildAttendanceReport({ rows, shifts, meta }) {
+function buildAttendanceReport({ rows, shifts, meta, doubleRows }) {
   const doc = new PDFDocument({
     size: 'A4',
     margin: 0,
@@ -775,9 +790,16 @@ function buildAttendanceReport({ rows, shifts, meta }) {
     }
   });
 
-  const sorted = sortRows(rows, meta.sortBy);
+  // Double shifts: a same-date Day + Night pair shares its hours between its
+  // two records (for the counts) and is listed as one merged line.
+  const wide = normalizeDoubles(doubleRows || rows);
+  const byId = new Map(wide.map((r) => [r.id, r]));
+  const runs = doubleShiftRuns(wide);
+  const records = rows.map((r) => byId.get(r.id) || r).map((r) => ({ ...r, doubleRun: runs.get(r.id) || null }));
+  const lines = mergeDoubles(records);
+  const sorted = sortRows(lines, meta.sortBy);
   const groups = groupRows(sorted, meta.groupBy);
-  const stats = computeStats(sorted);
+  const stats = computeStats(records, meta.from, meta.to);
   const cur = makeCursor(doc);
 
   const bandBottom = drawBand(doc, meta);

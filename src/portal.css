@@ -418,6 +418,10 @@ th.num .th-sort { justify-content: center; }
 .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
 .tag--late-in { color: var(--warn); background: var(--warn-bg); }
 .tag--early-out { color: var(--critical); background: var(--critical-bg); }
+/* Day + Night worked on the same date. */
+.tag--double { color: var(--info); background: var(--info-bg); font-size: 11px; padding: 2px 8px; margin-top: 4px; }
+/* "(+1)" after a double shift's next-day clock-out in report tables. */
+.day-mark { color: var(--info); font-weight: 600; white-space: nowrap; }
 
 .chip--day { color: #8C5300; border-color: #EDCD8C; background: #FAF0D8; }
 .chip--night { color: #3F3AB8; border-color: #C3C6EE; background: #E8E9FA; }

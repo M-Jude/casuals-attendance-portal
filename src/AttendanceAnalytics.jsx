@@ -135,7 +135,7 @@ export default function AttendanceAnalytics({ rows }) {
 
   const punctuality = stats.completed ? `${pct(stats.punctual, stats.completed)}%` : '—';
   const cards = [
-    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'}`, accent: '#3B7DD8' },
+    { label: 'SHIFT RECORDS', value: String(stats.total), sub: `across ${stats.days.length} day${stats.days.length === 1 ? '' : 's'} · ${stats.doubleShifts} double shift${stats.doubleShifts === 1 ? '' : 's'}`, accent: '#3B7DD8' },
     { label: 'WORKERS', value: String(stats.workers), sub: 'with attendance in range', accent: '#3B7DD8' },
     { label: 'COMPLETED SHIFTS', value: String(stats.completed), sub: `${pct(stats.completed, stats.total)}% have in + out`, accent: '#0F8A76' },
     { label: 'HOURS WORKED', value: stats.hoursTotal.toFixed(1), sub: stats.completed ? `avg ${stats.hoursAvg.toFixed(1)} h / shift` : 'no completed shifts', accent: '#0F8A76' },
@@ -202,7 +202,7 @@ export default function AttendanceAnalytics({ rows }) {
         <div className="an__meta">
           {shiftBits.join('  ·  ')}
           {shiftBits.length > 0 && '  ·  '}
-          Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Unscheduled: {stats.unscheduled}  ·  Not yet approved: {stats.unapproved}
+          Double shifts: {stats.doubleShifts}  ·  Early check-outs: {stats.earlyCheckOuts}  ·  Multiple punches: {stats.multiPunch}  ·  Unscheduled: {stats.unscheduled}  ·  Not yet approved: {stats.unapproved}
         </div>
       </Panel>
 

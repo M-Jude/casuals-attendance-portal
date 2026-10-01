@@ -81,74 +81,86 @@ async function syncOneDate(dateStr) {
     ).map((p) => [p.biostarEventId, new Date(p.timestamp).getTime()])
   );
 
-  // Wrapped in a transaction so a crash partway through a day's records
-  // doesn't leave that day half-synced. Re-running is still safe either way
-  // (every write is an upsert keyed on biostarEventId), but this avoids
-  // needing a re-run to reach consistency.
-  await prisma.$transaction(async (tx) => {
-    for (const record of records) {
-      // Field shape confirmed against the live server (see
-      // test/mockSyncTest.js): top-level user_id, plus an original_log
-      // wrapper carrying the punch id and a duplicate of the user_id.
-      const bioUserId = record.user_id || record.original_log?.user?.user_id;
-      const punchId = record.original_log?.id;
+  // All of the day's workers in one query, up front — a per-record lookup
+  // inside the transaction made it run past Prisma's 5s interactive
+  // transaction timeout on busy days (P2028 "Transaction not found").
+  const bioUserIds = [...new Set(
+    records.map((r) => r.user_id || r.original_log?.user?.user_id).filter(Boolean).map(String)
+  )];
+  const workersByBioId = new Map(
+    (bioUserIds.length
+      ? await prisma.casualWorker.findMany({ where: { biostarUserId: { in: bioUserIds } } })
+      : []
+    ).map((w) => [w.biostarUserId, w])
+  );
 
-      if (!bioUserId || !punchId) {
-        skipped++;
-        continue; // malformed record — skip rather than crash the whole sync
-      }
+  const upserts = [];
+  for (const record of records) {
+    // Field shape confirmed against the live server (see
+    // test/mockSyncTest.js): top-level user_id, plus an original_log
+    // wrapper carrying the punch id and a duplicate of the user_id.
+    const bioUserId = record.user_id || record.original_log?.user?.user_id;
+    const punchId = record.original_log?.id;
 
-      const worker = await tx.casualWorker.findUnique({
-        where: { biostarUserId: String(bioUserId) }
-      });
-
-      if (!worker) {
-        skipped++;
-        continue; // worker not yet provisioned in our table — flag for review
-      }
-
-      if (worker.status !== 'active') {
-        skipped++;
-        continue; // worker marked inactive — don't sync new punches for them
-      }
-
-      const timestamp = new Date(record.device_datetime);
-      if (Number.isNaN(timestamp.getTime())) {
-        skipped++;
-        continue; // unparseable timestamp
-      }
-      if (timestamp.getTime() - Date.now() > MAX_FUTURE_SKEW_MS) {
-        console.warn(`Skipping punch ${punchId} — timestamp ${timestamp.toISOString()} is in the future (device clock skew?).`);
-        skipped++;
-        continue;
-      }
-
-      const eventType = mapPunchType(record.type);
-      if (known.get(String(punchId)) !== timestamp.getTime()) changedWorkerIds.add(worker.id);
-
-      // update (not just create) so a correction BioStar makes to an
-      // already-synced punch — this endpoint is literally named
-      // punch_logs/modified — actually gets pulled in on the next sync,
-      // rather than being silently ignored forever.
-      await tx.attendanceLog.upsert({
-        where: { biostarEventId: String(punchId) },
-        update: {
-          eventType,
-          timestamp,
-          rawPayload: record,
-          syncedAt: new Date()
-        },
-        create: {
-          casualWorkerId: worker.id,
-          biostarEventId: String(punchId),
-          eventType,
-          timestamp,
-          rawPayload: record
-        }
-      });
-      created++;
+    if (!bioUserId || !punchId) {
+      skipped++;
+      continue; // malformed record — skip rather than crash the whole sync
     }
-  });
+
+    const worker = workersByBioId.get(String(bioUserId));
+
+    if (!worker) {
+      skipped++;
+      continue; // worker not yet provisioned in our table — flag for review
+    }
+
+    if (worker.status !== 'active') {
+      skipped++;
+      continue; // worker marked inactive — don't sync new punches for them
+    }
+
+    const timestamp = new Date(record.device_datetime);
+    if (Number.isNaN(timestamp.getTime())) {
+      skipped++;
+      continue; // unparseable timestamp
+    }
+    if (timestamp.getTime() - Date.now() > MAX_FUTURE_SKEW_MS) {
+      console.warn(`Skipping punch ${punchId} — timestamp ${timestamp.toISOString()} is in the future (device clock skew?).`);
+      skipped++;
+      continue;
+    }
+
+    const eventType = mapPunchType(record.type);
+    if (known.get(String(punchId)) !== timestamp.getTime()) changedWorkerIds.add(worker.id);
+
+    // update (not just create) so a correction BioStar makes to an
+    // already-synced punch — this endpoint is literally named
+    // punch_logs/modified — actually gets pulled in on the next sync,
+    // rather than being silently ignored forever.
+    upserts.push(prisma.attendanceLog.upsert({
+      where: { biostarEventId: String(punchId) },
+      update: {
+        eventType,
+        timestamp,
+        rawPayload: record,
+        syncedAt: new Date()
+      },
+      create: {
+        casualWorkerId: worker.id,
+        biostarEventId: String(punchId),
+        eventType,
+        timestamp,
+        rawPayload: record
+      }
+    }));
+    created++;
+  }
+
+  // Written as one batch transaction so a crash partway through a day's
+  // records doesn't leave that day half-synced. Re-running is still safe
+  // either way (every write is an upsert keyed on biostarEventId), but this
+  // avoids needing a re-run to reach consistency.
+  if (upserts.length) await prisma.$transaction(upserts);
 
   return { created, skipped, changedWorkerIds: [...changedWorkerIds] };
 }
