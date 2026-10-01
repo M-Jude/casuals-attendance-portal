@@ -19,9 +19,9 @@ jobs:
     name: Test & build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -34,12 +34,12 @@ jobs:
   deploy:
     name: Deploy to Windows Server
     needs: test
-    # Only deploy code that has actually landed on master — never PR code.
+    # Only deploy code that has actually landed on master - never PR code.
     if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: [self-hosted, Windows, casuals-portal]
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Deploy
         shell: powershell
