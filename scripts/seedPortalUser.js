@@ -10,7 +10,7 @@
 // Roles: sysadmin | hr | admin_assistant | finance | supervisor
 // (supervisors need a crew — create those in the portal.)
 
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const prisma = require('../prismaClient');
 const { ROLES } = require('../middleware/requireRole');
 

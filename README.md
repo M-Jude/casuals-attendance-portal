@@ -102,6 +102,48 @@ BioStar 2  --(hourly API sync)-->  MySQL (Prisma)  --(REST API)-->  React portal
 7. **Start the server** (`npm start`) and the frontend (`npm run dev`,
    which proxies `/api` to the server).
 
+## Deployment (CI/CD to Windows Server)
+
+`.github/workflows/ci-cd.yml` runs on GitHub Actions:
+
+- **Pull request into `master`** → installs, runs `npm test` and builds the
+  frontend on a GitHub-hosted runner. Nothing is deployed, so the PR shows
+  whether it is safe to merge.
+- **Merge into `master`** (or a manual "Run workflow") → the same checks,
+  then the `deploy` job runs on a **self-hosted runner on the Windows Server
+  VM** and executes `deploy/windows/deploy.ps1`: build, stop the service,
+  mirror the files into `C:\apps\casuals-attendance-portal` (keeping `.env`
+  and `logs\`), `prisma migrate deploy`, start the service, health-check
+  `/api/health`. The live portal is updated within a few minutes of merging.
+
+In production Express serves the built React app from `dist/`, so the
+portal and API share one URL (`http://<server>:<PORT>/`).
+
+### One-time VM setup
+
+1. Install **Node.js LTS**. The VM needs network access to MySQL, BioStar
+   and GitHub.
+2. Get a runner token: repo → **Settings → Actions → Runners → New
+   self-hosted runner** — copy the value after `--token` (valid one hour).
+3. From an elevated PowerShell in a copy of this repo, run
+   ```powershell
+   .\deploy\windows\setup-server.ps1 -RunnerToken <token>
+   ```
+   (optional `-AppDir`, `-ServiceName`, `-Port`). It trusts the Let's
+   Encrypt root if the server lacks it (GitHub's download hosts need it),
+   installs NSSM, creates the app folder, registers the `CasualsPortal`
+   service, opens the firewall port and installs the GitHub Actions runner
+   as a service (label `casuals-portal`, running as LocalSystem so it can
+   restart the portal). Safe to re-run.
+4. Fill in `C:\apps\casuals-attendance-portal\.env` with the real values
+   (see Setup above). It is never overwritten by deploys.
+5. Merge a PR into `master` (or run the workflow manually from the
+   **Actions** tab) to do the first deploy, then run the seed scripts from
+   the app folder if this is a fresh database.
+
+Recommended: protect `master` (Settings → Branches) to require pull requests
+and the **Test & build** check, so only passing code is deployed.
+
 ## Verifying the setup
 
 1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against

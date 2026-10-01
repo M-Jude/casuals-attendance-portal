@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const cron = require('node-cron');
 const { syncAttendance } = require('./sync/attendanceSync');
@@ -8,6 +10,10 @@ const { recomputeLookback } = require('./services/recompute');
 
 const app = express();
 app.use(express.json());
+
+// Liveness probe for the deploy script — registered before the routers so
+// it never goes through their auth middleware.
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.use('/api/auth', require('./routes/auth'));             // POST /login, GET /me
 app.use('/api', require('./routes/users'));                // accounts (System Admin, HR)
@@ -19,6 +25,15 @@ app.use('/api', require('./routes/shifts'));               // shift rules
 app.use('/api', require('./routes/schedules'));            // crews, rotations, worker schedules, exceptions, pattern review
 app.use('/api', require('./routes/approvals'));            // shift approvals
 app.use('/api', require('./routes/notifications'));        // in-app notifications
+
+// In production the built React app (`npm run build` → dist/) is served from
+// here too, so the portal and API share one origin. In development Vite
+// serves the frontend instead and dist/ doesn't exist.
+const DIST = path.join(__dirname, 'dist');
+if (fs.existsSync(DIST)) {
+  app.use(express.static(DIST));
+  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(DIST, 'index.html')));
+}
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
