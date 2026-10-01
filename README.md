@@ -144,20 +144,21 @@ portal and API share one URL (`http://<server>:<PORT>/`).
 Recommended: protect `master` (Settings → Branches) to require pull requests
 and the **Test & build** check, so only passing code is deployed.
 
-### Public access (Cloudflare Tunnel)
+### Public access (Tailscale Funnel)
 
-To reach the portal from outside the office network without opening any
-inbound port, `deploy/windows/setup-tunnel.ps1` installs `cloudflared` as a
-Windows service that connects out to Cloudflare, which serves the public
-HTTPS address. Needs a domain on a Cloudflare account.
+To reach the portal from any network without opening an inbound port or
+owning a domain, `deploy/windows/setup-funnel.ps1` installs Tailscale as a
+Windows service and turns on Funnel, which serves the portal over HTTPS at
+`https://<machine-name>.<tailnet>.ts.net`.
 
-1. In the Cloudflare dashboard: **Zero Trust → Networks → Tunnels → Create
-   a tunnel → Cloudflared**, and copy the token from the install command.
-2. On the tunnel's **Public Hostname** tab, add e.g. `portal.<your-domain>`
-   → service **HTTP**, URL `localhost:<PORT>`.
-3. From an elevated PowerShell: `.\deploy\windows\setup-tunnel.ps1 -Token <token>`.
-4. Set `APP_BASE_URL` in the app's `.env` to the public URL (used in email
-   links) and restart the `CasualsPortal` service.
+1. Create a free account at https://tailscale.com, then **Settings → Keys →
+   Generate auth key**.
+2. From an elevated PowerShell:
+   `.\deploy\windows\setup-funnel.ps1 -AuthKey <tskey-auth-...>`. If
+   Tailscale prints a link to enable Funnel for the tailnet, open it and
+   approve. The script prints the public URL when done.
+3. Set `APP_BASE_URL` in the app's `.env` to that URL (used in email links)
+   and restart the `CasualsPortal` service.
 
 Before exposing it, make sure `JWT_SECRET` is a fresh random value. Once
 everyone uses the public URL, `HOST=127.0.0.1` in `.env` stops the portal
