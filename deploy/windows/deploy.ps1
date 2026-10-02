@@ -52,6 +52,16 @@ try {
   if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit code $LASTEXITCODE)" }
   $global:LASTEXITCODE = 0
 
+  # Which version is live, for the System status page. GITHUB_* are set by
+  # Actions; a hand-run deploy records "manual".
+  $version = [ordered]@{
+    commit     = $(if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { 'manual' })
+    ref        = $(if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { $null })
+    runUrl     = $(if ($env:GITHUB_RUN_ID) { "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID" } else { $null })
+    deployedAt = (Get-Date).ToUniversalTime().ToString('o')
+  }
+  [IO.File]::WriteAllText("$AppDir\version.json", ($version | ConvertTo-Json))
+
   # 4. Apply any new database migrations (reads DATABASE_URL from $AppDir\.env).
   Push-Location $AppDir
   try {

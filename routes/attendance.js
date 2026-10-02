@@ -4,7 +4,7 @@ const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { syncAttendance } = require('../sync/attendanceSync');
 const { recomputeLookback } = require('../services/recompute');
-const { withSyncLock, markFullSync } = require('../services/liveSync');
+const { withSyncLock, markFullSync, markFullSyncFailed } = require('../services/liveSync');
 
 const router = express.Router();
 
@@ -25,9 +25,14 @@ router.post('/attendance/sync', authenticate, requireRole('sysadmin', 'hr', 'adm
   try {
     // Waits for any scheduled/live sync already running rather than overlapping it.
     await withSyncLock(async () => {
-      await syncAttendance();
-      await recomputeLookback();
-      markFullSync();
+      try {
+        await syncAttendance();
+        await recomputeLookback();
+        markFullSync();
+      } catch (err) {
+        markFullSyncFailed(err);
+        throw err;
+      }
     });
 
     res.json({ success: true });

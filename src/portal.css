@@ -1101,6 +1101,14 @@ body.no-scroll { overflow: hidden; }
   .confirm__actions .btn { flex: 1; }
 }
 
+/* System status page (SystemStatusPage.jsx). */
+.status { border-left: 4px solid var(--accent); }
+.status--warn { border-left-color: var(--warn); }
+.status--error { border-left-color: var(--critical); }
+.status__row { display: flex; gap: 12px; justify-content: space-between; font-size: 13px; padding: 5px 0; border-top: 1px solid var(--line); }
+.status__label { color: var(--muted); flex: 0 0 auto; }
+.status__value { text-align: right; overflow-wrap: anywhere; }
+
 /* A generated temporary password, shown once when its email failed. */
 .temp-password {
   font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 22px; letter-spacing: 0.08em;

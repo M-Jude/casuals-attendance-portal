@@ -8,6 +8,7 @@ import ReportsPage from './ReportsPage';
 import MyAttendancePage from './MyAttendancePage';
 import AuditLogsPage from './AuditLogsPage';
 import LivePage from './LivePage';
+import SystemStatusPage from './SystemStatusPage';
 import NotificationsBell from './NotificationsBell';
 import { ROLE_LABEL, isReadOnly } from './api';
 import Icon from './icons';
@@ -31,7 +32,8 @@ const NAV = [
   { page: 'schedules', label: 'Schedules', icon: 'schedules', section: 'Setup', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'] },
   { page: 'rules', label: 'Shift rules', icon: 'rules', section: 'Setup', roles: ALL },
   { page: 'users', label: 'Users', icon: 'users', section: 'Setup', roles: ['sysadmin', 'hr', 'auditor'] },
-  { page: 'audit', label: 'Audit logs', icon: 'audit', section: 'Setup', roles: ['sysadmin', 'auditor'] }
+  { page: 'audit', label: 'Audit logs', icon: 'audit', section: 'Setup', roles: ['sysadmin', 'auditor'] },
+  { page: 'status', label: 'System status', short: 'Status', icon: 'status', section: 'Setup', roles: ['sysadmin', 'auditor'] }
 ];
 
 // On phones the first few pages sit in a bottom tab bar, like a native app;
@@ -192,6 +194,7 @@ export default function Shell({ token, user, api, onLogout }) {
       {page === 'mine' && <MyAttendancePage api={api} token={token} user={user} />}
       {page === 'audit' && <AuditLogsPage api={api} token={token} user={user} />}
       {page === 'live' && <LivePage api={api} token={token} user={user} />}
+      {page === 'status' && <SystemStatusPage api={api} user={user} />}
         </ErrorBoundary>
         </div>
         </main>

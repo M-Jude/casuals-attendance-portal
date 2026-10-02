@@ -268,8 +268,31 @@ job only covers the recent lookback window.
 
 | Role | Sees | Does |
 |---|---|---|
-| System Admin | everything | any account, crews and cycles, shift rules, approves anything |
-| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Does not approve attendance** (separation of duties). Signs in with password + authenticator code |
+| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+
+System Admin safeguards:
+- **Two-step sign-in**: a System Admin's password alone never gives a
+  session; they also enter a 6-digit code from an authenticator app (set
+  up by scanning a QR code at their first sign-in). Sessions without the
+  code are refused, and resetting someone's authenticator ends theirs. A
+  lost phone: another System Admin uses Users → Manage → "Reset two-step
+  sign-in"; if none can, run
+  `node scripts/seedPortalUser.js reset-two-step <email>` on the server.
+- **Generated temporary passwords**: new accounts and resets get a
+  10-character password made up by the portal and emailed to the account
+  holder, so no admin chooses or sees it (it's shown once only if the
+  email fails). It must be replaced at first sign-in.
+- **The last active System Admin** can't be disabled or demoted; keep at
+  least two (the Users page warns otherwise).
+- **All System Admins are emailed** when anyone is made or stops being a
+  System Admin, or a System Admin is disabled, re-enabled, has their
+  password reset or their two-step sign-in reset.
+
+**System status** (System Admin, Auditor) shows the portal version and last
+deploy, database, BioStar sync, email, shifts/workers, accounts (incl.
+two-step coverage) and approvals at a glance. Deploys write `version.json`
+for it.
 | Admin Assistant | everything | schedules and exceptions, approves escalated shifts |
 | Finance | approved records only | read-only, exports/PDF |
 | Shift Supervisor | their crew's records | approves their crew's shifts, records exceptions for their crew |

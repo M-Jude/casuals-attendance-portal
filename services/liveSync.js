@@ -12,7 +12,10 @@ const { eatDateStr, addDaysStr } = require('../sync/shiftEngine');
 
 let queue = Promise.resolve();
 let busy = false;
-const state = { lastLiveSyncAt: null, lastFullSyncAt: null, lastError: null };
+// lastError: the latest live-sync failure (cleared by a good one);
+// lastFullSyncError / lastFullSyncFailedAt: the latest hourly or manual sync
+// failure (cleared by a good one) — shown on the System status page.
+const state = { lastLiveSyncAt: null, lastFullSyncAt: null, lastError: null, lastFullSyncError: null, lastFullSyncFailedAt: null };
 
 // Runs fn once no other sync is running.
 function withSyncLock(fn) {
@@ -50,6 +53,14 @@ async function runLiveSync() {
 // Marks a completed full (hourly or manual) sync — it covers today too.
 function markFullSync() {
   state.lastFullSyncAt = new Date();
+  state.lastFullSyncError = null;
+  state.lastFullSyncFailedAt = null;
+}
+
+// Marks a failed full sync (BioStar unreachable, login refused, ...).
+function markFullSyncFailed(err) {
+  state.lastFullSyncError = err?.message || String(err);
+  state.lastFullSyncFailedAt = new Date();
 }
 
 // When BioStar data was last pulled, by either kind of sync.
@@ -58,4 +69,4 @@ function lastSyncAt() {
   return times.length ? new Date(Math.max(...times.map((t) => t.getTime()))) : null;
 }
 
-module.exports = { runLiveSync, withSyncLock, markFullSync, lastSyncAt, liveSyncState: state };
+module.exports = { runLiveSync, withSyncLock, markFullSync, markFullSyncFailed, lastSyncAt, liveSyncState: state };

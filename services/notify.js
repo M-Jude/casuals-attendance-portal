@@ -11,6 +11,16 @@ const prisma = require('../prismaClient');
 let transporter = null;
 let warnedNoSmtp = false;
 
+// The latest email attempt, for the System status page (in memory; resets
+// when the service restarts).
+const emailHealth = { lastAttemptAt: null, lastOkAt: null, lastError: null, lastErrorAt: null };
+function recordEmail(ok, err) {
+  const now = new Date();
+  emailHealth.lastAttemptAt = now;
+  if (ok) { emailHealth.lastOkAt = now; emailHealth.lastError = null; emailHealth.lastErrorAt = null; }
+  else { emailHealth.lastError = err?.message || String(err); emailHealth.lastErrorAt = now; }
+}
+
 function getTransporter() {
   if (!process.env.SMTP_HOST) {
     if (!warnedNoSmtp) {
@@ -56,10 +66,12 @@ async function notifyUsers(users, { type, title, body, link = null, email = fals
         subject: `[Casuals Portal] ${title}`,
         text: `${body}${url ? `\n\nOpen in the portal: ${url}` : ''}`
       });
+      recordEmail(true);
       await prisma.notification.update({ where: { id: notification.id }, data: { emailedAt: new Date() } });
     } catch (err) {
       // An email failure must not stop the in-app notification or the job
       // that raised it.
+      recordEmail(false, err);
       console.error(`Notification email to ${user.email} failed:`, err.message);
     }
   }
@@ -105,11 +117,13 @@ async function sendAccountEmail({ kind, email, name, password }) {
       subject: kind === 'reset' ? '[Casuals Portal] Your password has been reset' : '[Casuals Portal] Your new account',
       text
     });
+    recordEmail(true);
     return { sent: true };
   } catch (err) {
+    recordEmail(false, err);
     console.error(`Account email to ${email} failed:`, err.message);
     return { sent: false, error: err.message };
   }
 }
 
-module.exports = { notifyUsers, usersWithRoles, sendAccountEmail };
+module.exports = { notifyUsers, usersWithRoles, sendAccountEmail, emailHealth };
