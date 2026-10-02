@@ -41,7 +41,7 @@ app.use('/api', require('./routes/approvals'));            // shift approvals
 app.use('/api', require('./routes/notifications'));        // in-app notifications
 app.use('/api', require('./routes/audit'));                // audit log (System Admin, Auditor)
 app.use('/api', require('./routes/system'));               // GET /system/status (System Admin, Auditor)
-app.use('/api', require('./routes/overview'));             // GET /overview, pay rates (Director, Finance, HR, System Admin, Auditor)
+app.use('/api', require('./routes/overview'));             // GET /overview (Director, HR, System Admin, Auditor)
 
 // In production the built React app (`npm run build` → dist/) is served from
 // here too, so the portal and API share one origin. In development Vite

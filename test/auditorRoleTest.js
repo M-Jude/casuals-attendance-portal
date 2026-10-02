@@ -55,10 +55,10 @@ const offenders = [];
 for (const file of fs.readdirSync(routesDir)) {
   const src = fs.readFileSync(path.join(routesDir, file), 'utf8');
   for (const m of src.matchAll(/router\.(post|put|patch|delete)\(([^\n]*)/g)) {
-    if (/auditor|director|VIEWERS/.test(m[2])) offenders.push(`${file}: ${m[0].slice(0, 80)}`);
+    if (/auditor|director|finance|VIEWERS/.test(m[2])) offenders.push(`${file}: ${m[0].slice(0, 80)}`);
   }
 }
-check(`no POST/PUT/PATCH/DELETE route lets the auditor or director in${offenders.length ? ` (${offenders.join('; ')})` : ''}`, offenders.length === 0);
+check(`no POST/PUT/PATCH/DELETE route lets a read-only role (auditor, director, finance) in${offenders.length ? ` (${offenders.join('; ')})` : ''}`, offenders.length === 0);
 
 // --------------------------------------------------------------- approvals
 const unit = { status: 'pending', kind: 'crew-shift', crewId: 1, dueAt: new Date(0), escalatedAt: new Date(0) };
