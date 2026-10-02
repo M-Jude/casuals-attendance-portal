@@ -1,28 +1,10 @@
 // Loads what reports/overview.js needs for a date range: shift records (as
-// the viewer may see them), approval batches, crews and pay rates.
+// the viewer may see them), approval batches and crews.
 
 const prisma = require('../prismaClient');
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const dateOnly = (s) => new Date(`${s}T00:00:00.000Z`);
-
-const PAY_RATES_KEY = 'pay-rates';
-const DEFAULT_RATES = { currency: 'UGX', dayShift: null, nightShift: null };
-
-async function getPayRates(subcontractorName) {
-  const row = await prisma.setting.findUnique({ where: { subcontractorName_key: { subcontractorName, key: PAY_RATES_KEY } } });
-  return { ...DEFAULT_RATES, ...(row?.value || {}) };
-}
-
-async function setPayRates(subcontractorName, rates, userId) {
-  const value = { currency: rates.currency, dayShift: rates.dayShift, nightShift: rates.nightShift };
-  await prisma.setting.upsert({
-    where: { subcontractorName_key: { subcontractorName, key: PAY_RATES_KEY } },
-    update: { value, updatedById: userId },
-    create: { subcontractorName, key: PAY_RATES_KEY, value, updatedById: userId }
-  });
-  return value;
-}
 
 // Every "YYYY-MM" month wholly inside [from, to] — its HR monthly batch
 // belongs to the period.
@@ -68,4 +50,4 @@ async function loadPeriod({ subcontractorName, visibility = {}, from, to }) {
   return { rows, units, crews };
 }
 
-module.exports = { loadPeriod, getPayRates, setPayRates, wholeMonths, DEFAULT_RATES };
+module.exports = { loadPeriod, wholeMonths };

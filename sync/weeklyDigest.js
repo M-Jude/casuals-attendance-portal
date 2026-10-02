@@ -4,7 +4,7 @@
 
 const prisma = require('../prismaClient');
 const { notifyUsers } = require('../services/notify');
-const { loadPeriod, getPayRates } = require('../services/overviewData');
+const { loadPeriod } = require('../services/overviewData');
 const { computeOverview, compare, digestText } = require('../reports/overview');
 const { todayEat } = require('../services/recompute');
 const { addDaysStr } = require('./shiftEngine');
@@ -21,13 +21,12 @@ function lastWeek(today) {
 async function buildDigest(subcontractorName, today = todayEat()) {
   const week = lastWeek(today);
   const before = { from: addDaysStr(week.from, -7), to: addDaysStr(week.to, -7) };
-  const [current, previous, rates] = await Promise.all([
+  const [current, previous] = await Promise.all([
     loadPeriod({ subcontractorName, ...week }),
-    loadPeriod({ subcontractorName, ...before }),
-    getPayRates(subcontractorName)
+    loadPeriod({ subcontractorName, ...before })
   ]);
-  const overview = computeOverview({ ...current, rates });
-  const change = compare(overview, computeOverview({ ...previous, rates }));
+  const overview = computeOverview(current);
+  const change = compare(overview, computeOverview(previous));
   const periodLabel = `week of ${fmt(week.from)} – ${fmt(week.to)}`;
   return {
     week,

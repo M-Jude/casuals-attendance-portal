@@ -1,7 +1,7 @@
 // The figures behind the Overview page and the Director's weekly digest:
-// headcount, shifts and hours (by crew and Day/Night), attendance quality,
-// approval discipline and — once pay rates are set — a cost estimate.
-// Pure, no database: the route and the digest job load the rows.
+// headcount, shifts and hours (by crew and Day/Night), attendance quality
+// and approval discipline. Pure, no database: the route and the digest job
+// load the rows.
 
 const { doubleShiftRuns } = require('./doubleShift');
 const { escalationDueAt } = require('../sync/approvalLogic');
@@ -19,9 +19,8 @@ const worked = (r) => r.status !== 'no-show';
  *          changedAfterApproval, worker: { id }, shift: { name } }
  * units  — ApprovalUnits for the period
  * crews  — [{ id, name }]
- * rates  — { currency, dayShift, nightShift } (amounts may be null)
  */
-function computeOverview({ rows, units = [], crews = [], rates = null, now = Date.now() }) {
+function computeOverview({ rows, units = [], crews = [], now = Date.now() }) {
   const crewName = new Map(crews.map((c) => [c.id, c.name]));
   const done = rows.filter(worked);
 
@@ -68,27 +67,7 @@ function computeOverview({ rows, units = [], crews = [], rates = null, now = Dat
   };
   approvals.onTimeRate = pct(approvals.approvedOnTime, approvals.approved);
 
-  return { totals, byCrew, approvals, cost: costEstimate(done, rates) };
-}
-
-// Shifts × the Day / Night rate, split into approved and not yet approved.
-// "open" until rates are entered.
-function costEstimate(done, rates) {
-  const day = Number.isFinite(rates?.dayShift) ? rates.dayShift : null;
-  const night = Number.isFinite(rates?.nightShift) ? rates.nightShift : null;
-  if (day === null && night === null) return { configured: false, currency: rates?.currency || 'UGX' };
-  const costOf = (list) => list.reduce((sum, r) => sum + ((r.shift.name === 'Night' ? night : day) || 0), 0);
-  const approvedRows = done.filter((r) => r.approvedAt);
-  return {
-    configured: true,
-    partial: day === null || night === null, // one rate missing: those shifts count as 0
-    currency: rates.currency || 'UGX',
-    dayShift: day,
-    nightShift: night,
-    total: costOf(done),
-    approved: costOf(approvedRows),
-    pending: costOf(done.filter((r) => !r.approvedAt))
-  };
+  return { totals, byCrew, approvals };
 }
 
 // Change from the previous period, for the headline figures.
@@ -104,13 +83,12 @@ function compare(current, previous) {
 // Things worth a look, in words.
 function attention(overview, change) {
   const out = [];
-  const { totals, approvals, cost } = overview;
+  const { totals, approvals } = overview;
   if (approvals.escalated) out.push(`${approvals.escalated} approval batch${approvals.escalated === 1 ? ' was' : 'es were'} escalated to HR (not approved within 48 hours).`);
   if (approvals.waiting) out.push(`${approvals.waiting} batch${approvals.waiting === 1 ? ' is' : 'es are'} still waiting for approval.`);
   if (totals.changedAfterApproval) out.push(`${totals.changedAfterApproval} approved shift${totals.changedAfterApproval === 1 ? '' : 's'} changed afterwards and need${totals.changedAfterApproval === 1 ? 's' : ''} re-approval.`);
   if (change && change.noShows > 0 && totals.noShows >= 5) out.push(`No-shows are up by ${change.noShows} on the previous period.`);
   if (totals.missingPunch) out.push(`${totals.missingPunch} shift${totals.missingPunch === 1 ? '' : 's'} with a missing check-in or check-out.`);
-  if (!cost.configured) out.push('Pay rates aren’t set, so there’s no cost estimate yet.');
   return out;
 }
 
@@ -118,7 +96,7 @@ const fmtNum = (n) => (n === null || n === undefined ? '—' : Number(n).toLocal
 
 // The weekly digest email for the Director.
 function digestText({ overview, change, periodLabel, portalUrl }) {
-  const { totals, byCrew, approvals, cost } = overview;
+  const { totals, byCrew, approvals } = overview;
   const delta = (k, unit = '') => (change && change[k] !== null && change[k] !== undefined && change[k] !== 0 ? ` (${change[k] > 0 ? '+' : ''}${fmtNum(change[k])}${unit} on the week before)` : '');
   const lines = [
     `Ark Group casuals at UCAA — ${periodLabel}`,
@@ -134,13 +112,10 @@ function digestText({ overview, change, periodLabel, portalUrl }) {
     '',
     `Approvals: ${approvals.approved} of ${approvals.batches} batches approved${approvals.onTimeRate === null ? '' : ` (${approvals.onTimeRate}% on time)`}, ${approvals.waiting} waiting, ${approvals.escalated} escalated.`
   ];
-  if (cost.configured) {
-    lines.push(`Estimated cost: ${cost.currency} ${fmtNum(cost.total)} (${cost.currency} ${fmtNum(cost.approved)} approved, ${fmtNum(cost.pending)} awaiting approval)${cost.partial ? ' — only one shift rate is set' : ''}.`);
-  }
-  const notes = attention(overview, change).filter((n) => !/Pay rates/.test(n));
+  const notes = attention(overview, change);
   if (notes.length) lines.push('', 'Worth a look:', ...notes.map((n) => `  - ${n}`));
   if (portalUrl) lines.push('', `Open the overview: ${portalUrl}/?page=overview`);
   return lines.join('\n');
 }
 
-module.exports = { computeOverview, compare, attention, digestText, costEstimate };
+module.exports = { computeOverview, compare, attention, digestText };

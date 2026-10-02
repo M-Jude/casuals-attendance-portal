@@ -50,25 +50,18 @@ check('by crew, permanent staff last', none.byCrew.map((c) => c.crew).join(',') 
 check('crew A figures', none.byCrew[0].shifts === 3 && none.byCrew[0].noShows === 1 && none.byCrew[0].late === 1 && none.byCrew[0].workers === 2);
 check('approvals: only batches already due', none.approvals.batches === 3 && none.approvals.approved === 2 && none.approvals.waiting === 1);
 check('approvals: on time = within 48 h; escalations counted', none.approvals.approvedOnTime === 1 && none.approvals.onTimeRate === 50 && none.approvals.escalated === 1);
-check('no rates: cost is open', none.cost.configured === false && none.cost.currency === 'UGX');
-check('open cost is flagged', attention(none, null).some((a) => /Pay rates/.test(a)));
-
-const priced = computeOverview({ rows, units, crews, now, rates: { currency: 'UGX', dayShift: 20000, nightShift: 25000 } });
-check('cost = shifts × rate (3 Day + 2 Night)', priced.cost.total === 3 * 20000 + 2 * 25000);
-check('cost split approved / pending', priced.cost.approved === 45000 && priced.cost.pending === 65000);
-const half = computeOverview({ rows, units, crews, now, rates: { currency: 'UGX', dayShift: 20000, nightShift: null } });
-check('one rate open: partial estimate', half.cost.configured && half.cost.partial && half.cost.total === 60000);
+check('no cost figures anywhere (cost estimates were removed)', !('cost' in none) && !attention(none, null).some((a) => /rate|cost/i.test(a)));
+check('attention: escalations, waiting batches, missing punches', attention(none, null).length === 3);
 
 const previous = computeOverview({ rows: rows.slice(0, 3), units: [], crews, now });
 const change = compare(none, previous);
 check('change on previous period', change.shiftsWorked === 2 && change.noShows === 1);
 
-const text = digestText({ overview: priced, change, periodLabel: 'week of 28 Sep – 4 Oct 2026', portalUrl: 'https://p.example' });
+const text = digestText({ overview: none, change, periodLabel: 'week of 28 Sep – 4 Oct 2026', portalUrl: 'https://p.example' });
 check('digest: headline figures', /Shifts worked: 5 \(Day 3, Night 2\) \(\+2 on the week before\)/.test(text) && /No-shows: 1/.test(text));
 check('digest: by crew and approvals', /Crew A: 3 shifts/.test(text) && /Approvals: 2 of 3 batches approved \(50% on time\)/.test(text));
-check('digest: cost when rates are set', /Estimated cost: UGX 110,000/.test(text));
 check('digest: link to the overview', text.endsWith('Open the overview: https://p.example/?page=overview'));
-check('digest: no cost line while rates are open', !/Estimated cost/.test(digestText({ overview: none, change: null, periodLabel: 'x' })));
+check('digest: no cost line', !/cost|UGX/i.test(text));
 
 check('last week = previous Monday–Sunday (run on a Monday)', JSON.stringify(lastWeek('2026-10-05')) === JSON.stringify({ from: '2026-09-28', to: '2026-10-04' }));
 check('last week, run mid-week', JSON.stringify(lastWeek('2026-10-08')) === JSON.stringify({ from: '2026-09-28', to: '2026-10-04' }));
@@ -76,6 +69,7 @@ check('a whole month includes its HR monthly batch', wholeMonths('2026-09-01', '
 check('a week includes no HR monthly batch', wholeMonths('2026-09-28', '2026-10-04').length === 0);
 
 check('Director is a read-only role', READ_ONLY_ROLES.includes('director') && ROLE_LABELS.director === 'Director');
+check('Finance is a read-only role', READ_ONLY_ROLES.includes('finance'));
 check('only the System Admin creates Directors', CAN_CREATE.sysadmin.includes('director') && !CAN_CREATE.hr.includes('director'));
 check('Directors cannot approve, and are told why', /Directors/.test(canApprove({ role: 'director' }, { status: 'pending', kind: 'crew-shift', dueAt: 0 }, Date.now()).reason));
 

@@ -25,9 +25,9 @@ const ALL = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'audi
 // roles, and the API refuses any change from them).
 const NAV = [
   // The month at a glance — the Director's home page.
-  { page: 'overview', label: 'Overview', icon: 'reports', section: 'Workspace', roles: ['director', 'finance', 'hr', 'sysadmin', 'auditor'] },
+  { page: 'overview', label: 'Overview', icon: 'reports', section: 'Workspace', roles: ['director', 'hr', 'sysadmin', 'auditor'] },
   { page: 'attendance', label: 'Attendance', icon: 'attendance', section: 'Workspace', roles: ALL },
-  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor', 'director'] },
+  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor', 'director', 'finance'] },
   // Only for accounts linked to a worker record (never the Director role).
   { page: 'mine', label: 'My attendance', short: 'My shifts', icon: 'me', section: 'Workspace', roles: ALL, needsWorker: true },
   { page: 'approvals', label: 'Approvals', icon: 'approvals', section: 'Workspace', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor', 'director'] },

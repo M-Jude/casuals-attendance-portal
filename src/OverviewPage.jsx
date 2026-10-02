@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useBusy, useToast } from './toast';
 
-// The month at a glance: headcount, shifts and hours, attendance quality,
-// approval discipline and — once pay rates are set — a cost estimate, each
-// compared with the previous month. The Director's home page; also for
-// Finance (approved records only), HR, the System Admin and the Auditor.
+// The month at a glance: headcount, shifts and hours, attendance quality
+// and approval discipline, each compared with the previous month. The
+// Director's home page; also for HR, the System Admin and the Auditor.
 
 const num = (n) => (n === null || n === undefined ? '—' : Number(n).toLocaleString('en-GB'));
-const money = (currency, n) => `${currency} ${num(Math.round(n))}`;
 
 function thisMonthEat() {
   return new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 7);
@@ -32,47 +29,10 @@ function Tile({ label, value, sub, delta, unit = '', lowerIsBetter = false, prev
   );
 }
 
-function RatesEditor({ api, rates, onSaved }) {
-  const [form, setForm] = useState({ currency: rates.currency || 'UGX', dayShift: rates.dayShift ?? '', nightShift: rates.nightShift ?? '' });
-  const [error, setError] = useState('');
-  const toast = useToast();
-  const { guard, busy } = useBusy();
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  function save(e) {
-    e.preventDefault();
-    return guard(async () => {
-      setError('');
-      try {
-        await api('/api/settings/pay-rates', { method: 'PUT', body: form });
-        toast.success('Pay rates saved. Cost estimates now use them.');
-        onSaved();
-      } catch (err) {
-        setError(err.message);
-        toast.error(`Couldn’t save the pay rates: ${err.message}`);
-      }
-    });
-  }
-
-  return (
-    <form onSubmit={save} style={{ marginTop: 12 }}>
-      <div className="form-row">
-        <label className="field">Currency<input value={form.currency} onChange={set('currency')} maxLength={3} style={{ width: 80 }} /></label>
-        <label className="field">Per Day shift<input type="number" min="0" step="any" value={form.dayShift} onChange={set('dayShift')} placeholder="open" /></label>
-        <label className="field">Per Night shift<input type="number" min="0" step="any" value={form.nightShift} onChange={set('nightShift')} placeholder="open" /></label>
-        <button className="btn btn--primary" disabled={busy}>{busy ? 'Saving…' : 'Save rates'}</button>
-      </div>
-      <p className="small muted" style={{ margin: '6px 0 0' }}>Per shift worked; a double shift counts as two. Leave a rate blank to keep it open.</p>
-      {error && <div className="error">{error}</div>}
-    </form>
-  );
-}
-
 export default function OverviewPage({ api }) {
   const [month, setMonth] = useState(thisMonthEat());
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-  const [editingRates, setEditingRates] = useState(false);
 
   const load = useCallback(() => {
     setError('');
@@ -94,7 +54,6 @@ export default function OverviewPage({ api }) {
           <p className="page__hint">
             Ark Group casuals at UCAA, compared with {prevLabel || 'the previous month'}.
             {data?.inProgress ? ' This month is still in progress.' : ''}
-            {data?.scopeNote ? ` ${data.scopeNote}.` : ''}
           </p>
         </div>
         <label className="field">Month<input type="month" value={month} max={thisMonthEat()} onChange={(e) => e.target.value && setMonth(e.target.value)} /></label>
@@ -151,25 +110,6 @@ export default function OverviewPage({ api }) {
               <div className="status__row"><span className="status__label">Escalated to HR</span><span>{num(o.approvals.escalated)}</span></div>
               <div className="status__row"><span className="status__label">Changed after approval</span><span>{num(t.changedAfterApproval)} shift{t.changedAfterApproval === 1 ? '' : 's'}</span></div>
               <div className="status__row"><span className="status__label">Shifts approved so far</span><span>{num(t.approvedShifts)} of {num(t.shiftsWorked)}</span></div>
-            </div>
-
-            <div className="card">
-              <h3 className="card__title">Estimated cost</h3>
-              {o.cost.configured ? (
-                <>
-                  <p className="card__sub">Shifts worked × the rate per shift{o.cost.partial ? ' — only one rate is set, so the other shift counts as nothing' : ''}.</p>
-                  <div className="ov__cost">{money(o.cost.currency, o.cost.total)}</div>
-                  <div className="status__row"><span className="status__label">Approved shifts</span><span>{money(o.cost.currency, o.cost.approved)}</span></div>
-                  <div className="status__row"><span className="status__label">Not yet approved</span><span>{money(o.cost.currency, o.cost.pending)}</span></div>
-                  <div className="status__row"><span className="status__label">Rates</span><span>Day {o.cost.dayShift === null ? 'open' : num(o.cost.dayShift)} · Night {o.cost.nightShift === null ? 'open' : num(o.cost.nightShift)} per shift</span></div>
-                  {data.previous.cost.configured && <div className="status__row"><span className="status__label">{prevLabel}</span><span>{money(o.cost.currency, data.previous.cost.total)}</span></div>}
-                </>
-              ) : (
-                <p className="card__sub">Open — no pay rates set yet. {data.canEditRates ? 'Enter the Day and Night shift rates to see an estimate.' : 'HR or the System Admin can set them.'}</p>
-              )}
-              {data.canEditRates && (editingRates
-                ? <RatesEditor api={api} rates={data.rates} onSaved={() => { setEditingRates(false); load(); }} />
-                : <button className="btn btn--small" style={{ marginTop: 12 }} onClick={() => setEditingRates(true)}>{o.cost.configured ? 'Change rates…' : 'Set rates…'}</button>)}
             </div>
           </div>
         </>

@@ -1111,7 +1111,6 @@ body.no-scroll { overflow: hidden; }
 .ov__delta--good { color: var(--accent); }
 .ov__delta--bad { color: var(--critical); }
 .ov__delta--flat { color: var(--muted); }
-.ov__cost { font-size: 26px; font-weight: 700; margin: 4px 0 8px; }
 @media (max-width: 600px) { .ov__tiles { grid-template-columns: 1fr 1fr; } .ov__tile-value { font-size: 22px; } }
 
 /* System status page (SystemStatusPage.jsx). */
