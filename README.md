@@ -278,7 +278,9 @@ minutes are one event. Consequences:
 - Punches no expected shift claims (off-day work, a new worker's test punch,
   workers with too few punches to profile) are still shown, classified by clock time and flagged
   `unscheduled`, so a supervisor can record the exception.
-- A scheduled shift with no punches, once it has ended, is a `no-show`.
+- A scheduled shift with no punches, once it has ended, is **Absent**
+  (stored as status `no-show`; the portal, reports, PDFs and emails all
+  show it as "Absent").
 
 Rules: late = check-in more than `graceMinutes` (30) after the start, i.e.
 from 08:30:01 / 17:30:01; early check-out = before the scheduled end; no meal
@@ -414,11 +416,11 @@ records only; supervisors: their crew only).
 |---|---|---|
 | Daily attendance | day | everyone on one date, per shift |
 | Clock-in / clock-out timesheet | any (optionally one worker) | per worker, per day: actual clock-in and clock-out, every badge, minutes late / left early, hours |
-| Attendance summary | week, month, range, all | one line per worker: shifts, hours, late, no-shows, attendance % |
+| Attendance summary | week, month, range, all | one line per worker: shifts, hours, late, absent, attendance % |
 | Individual worker | week, month, range, all | one worker shift by shift, plus week-by-week totals |
 | Attendance register | week, month, range (≤ 31 days) | timesheet grid, D / N / DN / A per date |
 | Hours & payroll | week, month, range, all | shifts and hours, approved vs awaiting approval |
-| Exceptions | any | late (minutes late), no-shows, missing punches, early outs, multiple punches, unscheduled, worst offenders |
+| Exceptions | any | late (minutes late), absences, missing punches, early outs, multiple punches, unscheduled, worst offenders |
 | Daily headcount | week, month, range, all | one line per date |
 | Crew performance | any | each crew shift by shift, with approval state |
 | Approval status | week, month, range, all | approval batches, who approved when, escalations (not Finance) |

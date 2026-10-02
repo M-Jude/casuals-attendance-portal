@@ -87,7 +87,7 @@ function attention(overview, change) {
   if (approvals.escalated) out.push(`${approvals.escalated} approval batch${approvals.escalated === 1 ? ' was' : 'es were'} escalated to HR (not approved within 48 hours).`);
   if (approvals.waiting) out.push(`${approvals.waiting} batch${approvals.waiting === 1 ? ' is' : 'es are'} still waiting for approval.`);
   if (totals.changedAfterApproval) out.push(`${totals.changedAfterApproval} approved shift${totals.changedAfterApproval === 1 ? '' : 's'} changed afterwards and need${totals.changedAfterApproval === 1 ? 's' : ''} re-approval.`);
-  if (change && change.noShows > 0 && totals.noShows >= 5) out.push(`No-shows are up by ${change.noShows} on the previous period.`);
+  if (change && change.noShows > 0 && totals.noShows >= 5) out.push(`Absences are up by ${change.noShows} on the previous period.`);
   if (totals.missingPunch) out.push(`${totals.missingPunch} shift${totals.missingPunch === 1 ? '' : 's'} with a missing check-in or check-out.`);
   return out;
 }
@@ -105,10 +105,10 @@ function digestText({ overview, change, periodLabel, portalUrl }) {
     `Shifts worked: ${fmtNum(totals.shiftsWorked)} (Day ${fmtNum(totals.dayShifts)}, Night ${fmtNum(totals.nightShifts)})${delta('shiftsWorked')}`,
     `Hours worked: ${fmtNum(totals.hours)}${delta('hours')}`,
     `Attendance: ${totals.attendanceRate === null ? '—' : `${totals.attendanceRate}%`}${delta('attendanceRate', ' pts')}`,
-    `No-shows: ${fmtNum(totals.noShows)} · Late arrivals: ${fmtNum(totals.late)} · Early check-outs: ${fmtNum(totals.earlyOut)} · Missing punches: ${fmtNum(totals.missingPunch)} · Double shifts: ${fmtNum(totals.doubleShifts)}`,
+    `Absent: ${fmtNum(totals.noShows)} · Late arrivals: ${fmtNum(totals.late)} · Early check-outs: ${fmtNum(totals.earlyOut)} · Missing punches: ${fmtNum(totals.missingPunch)} · Double shifts: ${fmtNum(totals.doubleShifts)}`,
     '',
     'By crew:',
-    ...byCrew.map((c) => `  ${c.crew}: ${fmtNum(c.shifts)} shifts, ${fmtNum(c.hours)} h, ${fmtNum(c.noShows)} no-shows, ${fmtNum(c.late)} late`),
+    ...byCrew.map((c) => `  ${c.crew}: ${fmtNum(c.shifts)} shifts, ${fmtNum(c.hours)} h, ${fmtNum(c.noShows)} absent, ${fmtNum(c.late)} late`),
     '',
     `Approvals: ${approvals.approved} of ${approvals.batches} batches approved${approvals.onTimeRate === null ? '' : ` (${approvals.onTimeRate}% on time)`}, ${approvals.waiting} waiting, ${approvals.escalated} escalated.`
   ];

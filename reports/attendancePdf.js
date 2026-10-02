@@ -41,7 +41,7 @@ const STATUS = {
   late: { label: 'Late', fg: '#A26307', bg: '#FBEFD5', bar: '#E0A63A' },
   'no-checkout': { label: 'No checkout', fg: '#4A596C', bg: '#E9EDF2', bar: '#8B9BAF' },
   'no-checkin': { label: 'No check-in', fg: '#4A596C', bg: '#E9EDF2', bar: '#A9B6C5' },
-  'no-show': { label: 'No-show', fg: '#B3362A', bg: '#FBE5E2', bar: '#D9594C' },
+  'no-show': { label: 'Absent', fg: '#B3362A', bg: '#FBE5E2', bar: '#D9594C' },
   'in-progress': { label: 'In progress', fg: '#1F6FA8', bg: '#E2EFF9', bar: '#9CC7EA' }
 };
 const STATUS_ORDER = ['on-time', 'early', 'late', 'no-checkout', 'no-checkin', 'no-show', 'in-progress'];
@@ -345,7 +345,7 @@ function drawKpis(doc, y, stats) {
     { label: 'PUNCTUALITY', value: punctuality, sub: `${stats.punctual} of ${stats.completed} completed shifts`, color: STATUS['on-time'].bar },
     { label: 'LATE ARRIVALS', value: String(stats.counts.late), sub: `${pct(stats.counts.late, stats.total)}% of records`, color: STATUS.late.bar },
     { label: 'NO CHECKOUT', value: String(stats.counts['no-checkout']), sub: `${pct(stats.counts['no-checkout'], stats.total)}% of records`, color: STATUS['no-checkout'].bar },
-    { label: 'NO-SHOWS', value: String(stats.counts['no-show']), sub: 'scheduled, no punch activity', color: STATUS['no-show'].bar }
+    { label: 'ABSENT', value: String(stats.counts['no-show']), sub: 'scheduled, no punch activity', color: STATUS['no-show'].bar }
   ];
 
   cards.forEach((card, i) => {
@@ -484,13 +484,13 @@ function drawTableHeader(doc, y, cols, x0 = M) {
 function drawAttention(doc, cur, stats) {
   if (stats.attention.length === 0) return;
   const list = stats.attention.slice(0, 10);
-  sectionTitle(doc, cur, 'Workers needing attention', `top ${list.length} by late arrivals, no checkouts and no-shows`);
+  sectionTitle(doc, cur, 'Workers needing attention', `top ${list.length} by late arrivals, no checkouts and absences`);
 
   const cols = [
     { label: 'WORKER', w: 205 },
     { label: 'LATE', w: 62, align: 'center' },
     { label: 'NO CHECKOUT', w: 82, align: 'center' },
-    { label: 'NO-SHOW', w: 64, align: 'center' },
+    { label: 'ABSENT', w: 64, align: 'center' },
     { label: 'EARLY OUT', w: 60, align: 'center' },
     { label: 'SHIFTS', w: W - 205 - 62 - 82 - 64 - 60, align: 'center' }
   ];
@@ -642,7 +642,7 @@ function groupCountsText(rows) {
   if (c.late) bits.push(`${c.late} late`);
   if (c['no-checkout']) bits.push(`${c['no-checkout']} no checkout`);
   if (c['no-checkin']) bits.push(`${c['no-checkin']} no check-in`);
-  if (c['no-show']) bits.push(`${c['no-show']} no-show`);
+  if (c['no-show']) bits.push(`${c['no-show']} absent`);
   return bits.join('  -  ');
 }
 
@@ -715,7 +715,7 @@ function drawNotes(doc, cur, shifts) {
     ['Late', `Checked in more than ${grace} minutes after the shift start.`],
     ['No checkout', 'A check-in was recorded but no check-out. Late/on-time timing is not classified for these records.'],
     ['No check-in', 'A check-out was recorded but no check-in for that shift.'],
-    ['No-show', 'The worker was scheduled for the shift (crew rotation, permanent schedule or a supervisor exception) but has no punches for it.'],
+    ['Absent', 'The worker was scheduled for the shift (crew rotation, permanent schedule or a supervisor exception) but has no punches for it.'],
     ['Status', 'The Status column shows only "Late in" (checked in after the grace period) and "Early out" (left before the scheduled shift end), or both. It is blank for every other record.'],
     ['Double shift', 'Two shifts worked back to back. A Day and that evening\'s Night is one line, "Day + Night", from the Day\'s clock-in to the Night\'s clock-out (the Night stays on the Day\'s date even when it ends the next morning); it counts as 2 shifts and 1 double shift. A Night and the next morning\'s Day stay two lines, each on its own date, marked "double". Each shift is approved by its own crew\'s supervisor.'],
     ['Flags', `"Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],

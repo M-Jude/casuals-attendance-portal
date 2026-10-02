@@ -45,7 +45,7 @@ async function main() {
 
   const after = { rows: await count({}), noShows: await count({ status: 'no-show' }), held: await count({ changedAfterApproval: true }) };
   console.log(result);
-  console.log(`Rows: ${before.rows} -> ${after.rows}. No-shows: ${before.noShows} -> ${after.noShows}. Held for re-approval: ${before.held} -> ${after.held}.`);
+  console.log(`Rows: ${before.rows} -> ${after.rows}. Absent: ${before.noShows} -> ${after.noShows}. Held for re-approval: ${before.held} -> ${after.held}.`);
 }
 
 main()
