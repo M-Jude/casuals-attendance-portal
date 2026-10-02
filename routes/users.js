@@ -8,6 +8,7 @@ const { setWorkerSchedule } = require('../services/workerSchedule');
 const { todayEat } = require('../services/recompute');
 
 const { passwordProblem } = require('../services/passwordPolicy');
+const { sendAccountEmail } = require('../services/notify');
 
 const router = express.Router();
 const SALT_ROUNDS = 12;
@@ -63,8 +64,10 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
       },
       select: PUBLIC_FIELDS
     });
-    res.locals.audit = { entityId: user.id };
-    res.status(201).json({ user });
+    // Email them the sign-in details; the account stands either way.
+    const mail = await sendAccountEmail({ kind: 'created', email: user.email, name: user.name, password });
+    res.locals.audit = { entityId: user.id, details: { welcomeEmail: mail.sent ? 'sent' : `not sent: ${mail.error}` } };
+    res.status(201).json({ user, emailed: mail.sent, emailError: mail.error || null });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error('Failed to create user:', err);
@@ -144,8 +147,16 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
 
     const user = await prisma.portalUser.update({ where: { id }, data, select: PUBLIC_FIELDS });
     const changed = ['name', 'role', 'active', 'casualWorkerId', 'crewId'].filter((k) => k in data && data[k] !== target[k]);
-    res.locals.audit = { details: { before: Object.fromEntries(changed.map((k) => [k, target[k]])), after: Object.fromEntries(changed.map((k) => [k, data[k]])) } };
-    res.json({ user });
+    const details = { before: Object.fromEntries(changed.map((k) => [k, target[k]])), after: Object.fromEntries(changed.map((k) => [k, data[k]])) };
+
+    // A temporary password set for someone else is emailed to them.
+    let mail = null;
+    if (data.mustChangePassword) {
+      mail = await sendAccountEmail({ kind: 'reset', email: user.email, name: user.name, password });
+      details.resetEmail = mail.sent ? 'sent' : `not sent: ${mail.error}`;
+    }
+    res.locals.audit = { details };
+    res.json({ user, ...(mail ? { emailed: mail.sent, emailError: mail.error || null } : {}) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error('Failed to update user:', err);
