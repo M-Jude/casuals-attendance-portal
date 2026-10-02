@@ -62,10 +62,25 @@ try {
   }
   [IO.File]::WriteAllText("$AppDir\version.json", ($version | ConvertTo-Json))
 
-  # 4. Apply any new database migrations (reads DATABASE_URL from $AppDir\.env).
+  # 4. Apply any new database migrations. With MIGRATE_DATABASE_URL in .env
+  #    they run as the migration user, and the portal's own limited user
+  #    (DATABASE_URL) then gets its table permissions refreshed and checked
+  #    — read + add only on the audit log (scripts/dbGrants.js). Without
+  #    it, migrations run as DATABASE_URL, as before. The URL is never
+  #    printed (this output is kept in the deploy log).
+  $migrateLine = Select-String -Path "$AppDir\.env" -Pattern '^\s*MIGRATE_DATABASE_URL\s*=\s*"?([^"\r\n]+)"?' | Select-Object -First 1
   Push-Location $AppDir
   try {
-    Invoke-Native 'prisma migrate deploy' { npx prisma migrate deploy }
+    if ($migrateLine) {
+      $env:DATABASE_URL = $migrateLine.Matches[0].Groups[1].Value.Trim()
+      try {
+        Invoke-Native 'prisma migrate deploy (as the migration user)' { npx prisma migrate deploy }
+      } finally { Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue }
+      Invoke-Native 'database permissions for the portal user' { node scripts/dbGrants.js --apply }
+    } else {
+      Write-Warning 'MIGRATE_DATABASE_URL is not set: migrations run as DATABASE_URL and the audit log is not protected at database level. See "Database users" in the README.'
+      Invoke-Native 'prisma migrate deploy' { npx prisma migrate deploy }
+    }
   } finally { Pop-Location }
 } finally {
   # 5. Always bring the service back up, even if a step above failed.

@@ -164,6 +164,47 @@ Before exposing it, make sure `JWT_SECRET` is a fresh random value. Once
 everyone uses the public URL, `HOST=127.0.0.1` in `.env` stops the portal
 listening on the LAN at all (the tunnel connects locally).
 
+### Database users (protecting the audit log)
+
+The portal should not connect to MySQL as `root`. With two dedicated users,
+the running portal can read and add audit-log entries but **cannot edit or
+delete them** — even someone who gets hold of the portal's database password
+can't quietly rewrite the trail.
+
+| MySQL user | Used by | Can |
+|---|---|---|
+| `casuals_app` | the running portal (`DATABASE_URL`) | read/write ordinary tables; **read + add only** on `AuditLog`; no table changes |
+| `casuals_migrate` | the deploy only (`MIGRATE_DATABASE_URL`) | apply migrations; keep `casuals_app`'s permissions current |
+| `root` | database administrators only | everything — no longer in the portal's `.env` |
+
+`casuals_app` gets its rights table by table (`scripts/dbGrants.js`); every
+deploy re-applies them after migrating, so new tables are covered, and then
+checks — as `casuals_app` — that editing or deleting audit entries is refused.
+
+One-time switch-over, on the server:
+
+1. Make two passwords (letters and digits, so no URL escaping is needed):
+   `node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"` (run it twice).
+2. Put them into `deploy\mysql\setup-users.sql` and run it as root
+   (MySQL Workbench, or `mysql -u root -p -P 4436 < deploy\mysql\setup-users.sql`).
+3. In `C:\apps\casuals-attendance-portal\.env` (keep a copy of the old
+   `DATABASE_URL` line until step 5 works):
+   - change `DATABASE_URL` to
+     `"mysql://casuals_app:<app password>@localhost:4436/casuals_portal"`
+   - add
+     `MIGRATE_DATABASE_URL="mysql://casuals_migrate:<migrate password>@localhost:4436/casuals_portal"`
+
+   (The running portal keeps its old connection until it restarts.)
+4. From `C:\apps\casuals-attendance-portal`, run `node scripts/dbGrants.js`
+   to see the plan, then `node scripts/dbGrants.js --apply`. It grants the
+   permissions, then signs in as `casuals_app` and confirms that reading
+   works and editing/deleting audit entries is refused.
+5. `Restart-Service CasualsPortal` (as administrator) and check that
+   **System status** shows the database as OK. Then delete the old root line.
+
+If step 4 or 5 fails, put the old `DATABASE_URL` back and restart — nothing
+else has changed.
+
 ## Verifying the setup
 
 1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against
