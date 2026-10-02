@@ -6,8 +6,9 @@
 //   node scripts/seedPortalUser.js create <email> <password> <role> "<name>" [subcontractorName]
 //   node scripts/seedPortalUser.js set-role <email> <role>
 //   node scripts/seedPortalUser.js reset-password <email> <newPassword>
+//   node scripts/seedPortalUser.js reset-two-step <email>     (lost authenticator, no other System Admin)
 //
-// Roles: sysadmin | hr | admin_assistant | finance | supervisor
+// Roles: sysadmin | hr | admin_assistant | finance | supervisor | auditor
 // (supervisors are created in the portal, where you pick their worker record —
 // they lead the crew that worker rotates with.)
 
@@ -64,6 +65,15 @@ async function resetPassword(email, newPassword) {
   console.log(`Password reset for ${user.email}. They'll be asked to choose a new one when they sign in.`);
 }
 
+// Last resort when a System Admin has lost their authenticator and no other
+// System Admin can reset it in the portal.
+async function resetTwoStep(email) {
+  const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
+  if (!user) fail(`No portal user found with email "${email}".`);
+  await prisma.portalUser.update({ where: { id: user.id }, data: { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null } });
+  console.log(`Two-step sign-in reset for ${user.email}. They'll set up a new authenticator at their next sign-in.`);
+}
+
 async function main() {
   const [, , command, ...args] = process.argv;
 
@@ -79,8 +89,12 @@ async function main() {
     const [email, newPassword] = args;
     if (!email || !newPassword) fail('Usage: node scripts/seedPortalUser.js reset-password <email> <newPassword>');
     await resetPassword(email, newPassword);
+  } else if (command === 'reset-two-step') {
+    const [email] = args;
+    if (!email) fail('Usage: node scripts/seedPortalUser.js reset-two-step <email>');
+    await resetTwoStep(email);
   } else {
-    fail('Unknown command. Use "create", "set-role" or "reset-password".');
+    fail('Unknown command. Use "create", "set-role", "reset-password" or "reset-two-step".');
   }
 
   await prisma.$disconnect();

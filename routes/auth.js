@@ -3,7 +3,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
+const QRCode = require('qrcode');
 const { passwordProblem } = require('../services/passwordPolicy');
+const { generateSecret, verifyCode, otpauthUri, formatSecret } = require('../services/totp');
 
 const router = express.Router();
 
@@ -57,16 +59,142 @@ router.post('/login', async (req, res) => {
     }
     failedAttempts.delete(limitKey);
 
-    const token = jwt.sign(
-      { userId: user.id, subcontractorName: user.subcontractorName },
-      process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
+    // System Admins also need an authenticator code: the password only earns
+    // a short-lived pass to the code step (or, the first time, to setting
+    // the authenticator up).
+    if (needsTwoStep(user)) {
+      res.locals.audit = { summary: user.mfaEnabledAt ? 'Password accepted — waiting for the authenticator code' : 'Password accepted — setting up two-step sign-in' };
+      return res.json({ [user.mfaEnabledAt ? 'mfaRequired' : 'mfaSetupRequired']: true, mfaToken: issueMfaToken(user) });
+    }
 
-    res.json({ token });
+    res.json({ token: issueSession(user) });
   } catch (err) {
     console.error('Login failed:', err);
     res.status(500).json({ error: 'Login is temporarily unavailable. Try again shortly.' });
+  }
+});
+
+// ------------------------------------------------------- two-step sign-in
+//
+// Required for System Admins. The session token they get carries mfa: true,
+// and authenticate refuses a System Admin session without it — so a new
+// System Admin, or one whose authenticator was reset, is sent through setup
+// at their next sign-in.
+
+const MFA_TOKEN_TTL = '10m';
+
+function needsTwoStep(user) {
+  return user.role === 'sysadmin';
+}
+
+function issueSession(user, { mfa = false } = {}) {
+  return jwt.sign(
+    { userId: user.id, subcontractorName: user.subcontractorName, ...(mfa ? { mfa: true } : {}) },
+    process.env.JWT_SECRET,
+    { expiresIn: '8h' }
+  );
+}
+
+function issueMfaToken(user) {
+  return jwt.sign({ userId: user.id, purpose: 'mfa' }, process.env.JWT_SECRET, { expiresIn: MFA_TOKEN_TTL });
+}
+
+// The account behind a pass from /login, or null (expired, tampered, not a
+// two-step pass, or the account has since changed).
+async function accountForMfaToken(mfaToken, res) {
+  let payload;
+  try {
+    payload = jwt.verify(String(mfaToken || ''), process.env.JWT_SECRET);
+  } catch {
+    return null;
+  }
+  if (payload.purpose !== 'mfa') return null;
+  const user = await prisma.portalUser.findUnique({ where: { id: payload.userId } });
+  if (!user || !user.active || !needsTwoStep(user)) return null;
+  res.locals.auditUser = user;
+  return user;
+}
+
+const EXPIRED = 'Your sign-in has timed out. Sign in again with your email and password.';
+
+// First sign-in (or after a reset): a new secret, shown as a QR code to
+// scan into the authenticator app. Not active until a code from it is
+// confirmed (/mfa/enable).
+router.post('/mfa/setup', async (req, res) => {
+  try {
+    const user = await accountForMfaToken(req.body?.mfaToken, res);
+    if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
+    if (user.mfaEnabledAt) return res.status(409).json({ error: 'Two-step sign-in is already set up for this account.' });
+
+    const secret = generateSecret();
+    await prisma.portalUser.update({ where: { id: user.id }, data: { mfaPendingSecret: secret } });
+    const uri = otpauthUri(secret, user.email);
+    res.json({ secret: formatSecret(secret), otpauthUri: uri, qrDataUrl: await QRCode.toDataURL(uri, { margin: 1, width: 220 }) });
+  } catch (err) {
+    console.error('Two-step setup failed:', err);
+    res.status(500).json({ error: 'Could not start two-step setup. Try again shortly.' });
+  }
+});
+
+async function checkCode(req, res, user, secret) {
+  const limitKey = `mfa|${user.id}`;
+  if (isRateLimited(limitKey)) {
+    res.status(429).json({ error: 'Too many wrong codes. Try again in 15 minutes.' });
+    return null;
+  }
+  const step = verifyCode(secret, req.body?.code, { lastStep: user.mfaLastStep ?? null });
+  if (step === null) {
+    recordFailure(limitKey);
+    res.status(400).json({ error: 'That code isn’t right. Enter the 6-digit code your authenticator app shows now.' });
+    return null;
+  }
+  failedAttempts.delete(limitKey);
+  return step;
+}
+
+// Confirms setup with a code from the newly scanned secret, turns two-step
+// sign-in on and signs them in.
+router.post('/mfa/enable', async (req, res) => {
+  try {
+    const user = await accountForMfaToken(req.body?.mfaToken, res);
+    if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
+    if (user.mfaEnabledAt) return res.status(409).json({ error: 'Two-step sign-in is already set up for this account.' });
+    if (!user.mfaPendingSecret) return res.status(400).json({ error: 'Start the setup again — scan a new QR code.' });
+
+    const step = await checkCode(req, res, user, user.mfaPendingSecret);
+    if (step === null) return undefined;
+    await prisma.portalUser.update({
+      where: { id: user.id },
+      data: { mfaSecret: user.mfaPendingSecret, mfaPendingSecret: null, mfaEnabledAt: new Date(), mfaLastStep: step }
+    });
+    res.locals.audit = { summary: 'Set up two-step sign-in and signed in' };
+    res.json({ token: issueSession(user, { mfa: true }) });
+  } catch (err) {
+    console.error('Two-step enable failed:', err);
+    res.status(500).json({ error: 'Could not finish two-step setup. Try again shortly.' });
+  }
+});
+
+// The everyday second step: the code from their authenticator app.
+router.post('/mfa/verify', async (req, res) => {
+  try {
+    const user = await accountForMfaToken(req.body?.mfaToken, res);
+    if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
+    if (!user.mfaEnabledAt) return res.status(409).json({ error: 'Two-step sign-in isn’t set up yet — sign in again to set it up.' });
+
+    const step = await checkCode(req, res, user, user.mfaSecret);
+    if (step === null) return undefined;
+    // Remember the step so the same code can't be used again.
+    const claimed = await prisma.portalUser.updateMany({
+      where: { id: user.id, OR: [{ mfaLastStep: null }, { mfaLastStep: { lt: step } }] },
+      data: { mfaLastStep: step }
+    });
+    if (claimed.count === 0) return res.status(400).json({ error: 'That code has already been used. Wait for the next one.' });
+    res.locals.audit = { summary: 'Signed in (password + authenticator code)' };
+    res.json({ token: issueSession(user, { mfa: true }) });
+  } catch (err) {
+    console.error('Two-step verify failed:', err);
+    res.status(500).json({ error: 'Could not check the code. Try again shortly.' });
   }
 });
 

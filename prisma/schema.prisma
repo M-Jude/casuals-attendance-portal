@@ -51,6 +51,13 @@ model PortalUser {
   // Set when someone else chose the password (a new account, or an HR/admin
   // reset): the account can do nothing but change it until it has.
   mustChangePassword Boolean      @default(false)
+  // Two-step sign-in (authenticator app, TOTP) — required for System Admins.
+  // mfaPendingSecret holds a secret during setup until its first code is
+  // confirmed; mfaLastStep stops a code being used twice.
+  mfaSecret         String?
+  mfaPendingSecret  String?
+  mfaEnabledAt      DateTime?
+  mfaLastStep       Int?
   name              String        @default("")
   role              String        @default("hr")
   crewId            Int?

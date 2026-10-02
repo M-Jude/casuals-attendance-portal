@@ -15,7 +15,7 @@ const router = express.Router();
 const SALT_ROUNDS = 12;
 
 const PUBLIC_FIELDS = {
-  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true,
+  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true, mfaEnabledAt: true,
   crew: { select: { id: true, name: true } },
   worker: { select: { id: true, name: true, biostarUserId: true, status: true } }
 };
@@ -98,7 +98,7 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
 // roles it can create (not HR, Auditor or System Admin accounts).
 router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { name, role, active, resetPassword, casualWorkerId, moveToCrewId, effectiveFrom } = req.body || {};
+  const { name, role, active, resetPassword, resetTwoStep, casualWorkerId, moveToCrewId, effectiveFrom } = req.body || {};
 
   try {
     const target = await prisma.portalUser.findFirst({ where: { id, subcontractorName: req.user.subcontractorName } });
@@ -141,6 +141,18 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
       data.passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
       data.mustChangePassword = true;
     }
+    // A lost authenticator: another System Admin clears it, and the account
+    // sets a new one up at its next sign-in. (Not your own — that would let a
+    // stolen session remove the second step.)
+    const clearTwoStep = () => Object.assign(data, { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null });
+    if (resetTwoStep === true) {
+      if (req.user.role !== 'sysadmin' || target.role !== 'sysadmin') return res.status(403).json({ error: 'Only a System Admin can reset another System Admin’s two-step sign-in.' });
+      if (target.id === req.user.id) return res.status(400).json({ error: 'Ask another System Admin to reset your two-step sign-in.' });
+      clearTwoStep();
+    }
+    // Leaving the System Admin role drops their authenticator; if they're
+    // made one again, they set up a fresh one.
+    if (role !== undefined && role !== 'sysadmin' && target.role === 'sysadmin') clearTwoStep();
 
     // The worker link and (for supervisors) the crew are checked together
     // whenever the role, the link, or re-enabling could change them.
@@ -190,6 +202,7 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
       adminEvents.push(`${by} ${data.active ? 're-enabled' : 'disabled'} System Admin ${who}.`);
     }
     if (target.role === 'sysadmin' && password) adminEvents.push(`${by} reset the password of System Admin ${who}.`);
+    if (resetTwoStep === true) adminEvents.push(`${by} reset the two-step sign-in of System Admin ${who}. They'll set up a new authenticator at their next sign-in.`);
     if (adminEvents.length) {
       await tellAdmins(req.user.subcontractorName, {
         title: `System Admin change: ${user.name || user.email}`,
