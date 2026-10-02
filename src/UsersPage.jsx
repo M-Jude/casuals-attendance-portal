@@ -40,13 +40,18 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
   const [moveFrom, setMoveFrom] = useState(todayEat());
   const [confirmMove, setConfirmMove] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const isSupervisor = account.role === 'supervisor';
   const linkedWorker = account.casualWorkerId ? workersById.get(account.casualWorkerId) : null;
 
   async function patch(body) {
     setError('');
+    setNotice('');
     try {
-      await api(`/api/users/${account.id}`, { method: 'PATCH', body });
+      const result = await api(`/api/users/${account.id}`, { method: 'PATCH', body });
+      if (result.emailed === true) setNotice(`Password reset. ${account.email} has been emailed the temporary password.`);
+      else if (result.emailed === false) setNotice(`Password reset, but the email couldn’t be sent (${result.emailError}). Give them the temporary password yourself.`);
+      else if (body.password) setNotice('Password reset.');
       setEditing(false);
       setPassword('');
       setLinkTo(null);
@@ -72,7 +77,8 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
       <td>{ROLE_LABEL[account.role] || account.role}</td>
       <td>{account.crew?.name || '—'}</td>
       <td>
-        {canEdit && !editing && <button className="btn btn--small" onClick={() => setEditing(true)}>Manage</button>}
+        {canEdit && !editing && <button className="btn btn--small" onClick={() => { setNotice(''); setEditing(true); }}>Manage</button>}
+        {!editing && notice && <div className="small muted" style={{ marginTop: 6 }} role="status">{notice}</div>}
         {editing && (
           <div className="manage">
             {isSupervisor && (
@@ -132,7 +138,7 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
                 <button className="btn btn--small" disabled={!isStrongPassword(password)} onClick={() => patch({ password })}>Reset password</button>
               </div>
               {password && <PasswordChecklist password={password} id={`reset-password-rules-${account.id}`} />}
-              <p className="small muted" style={{ margin: '6px 0 0' }}>Temporary: they’ll have to choose their own at their next sign-in.</p>
+              <p className="small muted" style={{ margin: '6px 0 0' }}>It’s emailed to {account.email}, and is temporary: they’ll have to choose their own at their next sign-in.</p>
             </div>
             <div className="form-row" style={{ marginTop: 10 }}>
               <button className={`btn btn--small ${account.active ? 'btn--danger' : ''}`} onClick={() => patch({ active: !account.active })}>
@@ -202,8 +208,10 @@ export default function UsersPage({ api, user }) {
     setSaved('');
     if (isSupervisor && !worker) { setError('Choose the supervisor’s worker record — every supervisor is a worker.'); return; }
     try {
-      await api('/api/users', { method: 'POST', body: { ...form, casualWorkerId: canLink && worker ? worker.id : null } });
-      setSaved(`Account created for ${form.email}. Share the temporary password with them securely — they’ll have to choose their own when they first sign in.`);
+      const result = await api('/api/users', { method: 'POST', body: { ...form, casualWorkerId: canLink && worker ? worker.id : null } });
+      setSaved(result.emailed
+        ? `Account created. ${form.email} has been emailed the sign-in link and temporary password — they’ll choose their own when they first sign in.`
+        : `Account created, but the welcome email couldn’t be sent (${result.emailError}). Give ${form.email} the portal link and temporary password yourself.`);
       setForm((f) => ({ ...f, name: '', email: '', password: '' }));
       setWorker(null);
       load();

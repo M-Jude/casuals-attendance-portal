@@ -70,4 +70,46 @@ async function usersWithRoles(roles, subcontractorName) {
   return prisma.portalUser.findMany({ where: { role: { in: roles }, active: true, subcontractorName } });
 }
 
-module.exports = { notifyUsers, usersWithRoles };
+// Emails someone the temporary password HR / a System Admin just set for
+// them — on a new account (kind 'created') or a reset ('reset'). It's
+// one-time: the portal makes them choose their own at sign-in. Never
+// throws; returns { sent, error } so the caller can tell HR to share the
+// details another way if it didn't go.
+async function sendAccountEmail({ kind, email, name, password }) {
+  const mailer = getTransporter();
+  if (!mailer) return { sent: false, error: 'email is not set up on the server' };
+
+  const portalUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  const intro = kind === 'reset'
+    ? 'Your password for the UCAA-Ark Group Casuals Management System has been reset.'
+    : 'An account has been created for you on the UCAA-Ark Group Casuals Management System.';
+  const text = [
+    `Hello${name ? ` ${name}` : ''},`,
+    '',
+    intro,
+    '',
+    `Sign in at:          ${portalUrl || '(ask HR for the portal address)'}`,
+    `Email:               ${email}`,
+    `Temporary password:  ${password}`,
+    '',
+    'This password is for your first sign-in only. You will be asked to choose your own straight away:',
+    'at least 8 characters, with an uppercase letter, a lowercase letter and a special character.',
+    '',
+    'If you were not expecting this email, contact HR.'
+  ].join('\n');
+
+  try {
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: kind === 'reset' ? '[Casuals Portal] Your password has been reset' : '[Casuals Portal] Your new account',
+      text
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error(`Account email to ${email} failed:`, err.message);
+    return { sent: false, error: err.message };
+  }
+}
+
+module.exports = { notifyUsers, usersWithRoles, sendAccountEmail };
