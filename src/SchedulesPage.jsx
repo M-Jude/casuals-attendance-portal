@@ -80,7 +80,8 @@ function CrewsTab({ api, user }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
-  const isAdmin = user.role === 'sysadmin';
+  // System Admin and HR set up crews and their cycles.
+  const isAdmin = ['sysadmin', 'hr'].includes(user.role);
   const canSeeProposals = ['sysadmin', 'hr', 'admin_assistant', 'auditor'].includes(user.role);
 
   const load = useCallback(() => {
@@ -152,7 +153,7 @@ function CrewsTab({ api, user }) {
               <button className="btn btn--small" disabled={isBusy(`proposal-${p.id}`)} onClick={() => resolve(p, 'dismiss')}>Dismiss</button>
             </div>
           ) : (
-            <div className="small muted" style={{ marginTop: 6 }}>Waiting for the System Admin to apply or dismiss it.</div>
+            <div className="small muted" style={{ marginTop: 6 }}>Waiting for HR or the System Admin to apply or dismiss it.</div>
           )}
         </div>
       ))}

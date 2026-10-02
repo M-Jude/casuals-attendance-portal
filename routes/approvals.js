@@ -8,11 +8,11 @@ const { dateStrOf } = require('../sync/scheduleResolver');
 const { normalizeDoubles } = require('../reports/doubleShift');
 
 const router = express.Router();
-const APPROVERS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
-// Who may look at batches: the approvers, plus the Auditor (who sees every
-// batch — unitScope gives roles it doesn't name everything — and can't
-// approve: canApprove refuses them and authenticate blocks the request).
-const VIEWERS = [...APPROVERS, 'auditor'];
+const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
+// Who may look at batches: the approvers, plus the System Admin and the
+// Auditor, who see every batch (unitScope gives roles it doesn't name
+// everything) but can't approve: canApprove refuses them.
+const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor'];
 const MAX_COMMENT = 2000;
 
 // Which batches a user sees under "my approvals":

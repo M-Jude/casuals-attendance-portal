@@ -142,7 +142,7 @@ async function profileTenant(subcontractorName, shiftsByName, { fromDate, toDate
     });
     proposals++;
     if (notify) {
-      await notifyUsers(await usersWithRoles(['sysadmin'], subcontractorName), {
+      await notifyUsers(await usersWithRoles(['sysadmin', 'hr'], subcontractorName), {
         type: 'cycle-change',
         title: `${crew.name}: shift cycle appears to have changed`,
         body: `${proposal.evidence.membersPreferringNew} of ${proposal.evidence.membersConsidered} ${crew.name} workers have been punching on a different cycle since ${proposal.effectiveFrom}.\n\nCurrent: ${crew.rotation.pattern} from ${crew.rotation.anchorDate}\nDetected: ${proposal.pattern} from ${proposal.anchorDate}\n\nApply or dismiss it in Schedules → Crews. Until applied, their shifts are judged against the old cycle.`,
