@@ -221,4 +221,52 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
   }
 });
 
+// Delete an account (System Admin only). Removes the sign-in account and its
+// notifications — nothing else: the worker record it may be linked to, all
+// attendance, approvals, schedules and the audit log stay. Its name is kept
+// (DeletedAccount) so "approved by" and reports still say who it was.
+// Not your own account, and never the last active System Admin.
+router.delete('/users/:id', authenticate, requireRole('sysadmin'), async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const target = await prisma.portalUser.findFirst({ where: { id, subcontractorName: req.user.subcontractorName } });
+    if (!target) return res.status(404).json({ error: 'This account has already been deleted.', code: 'ALREADY_DONE' });
+    if (target.id === req.user.id) return res.status(400).json({ error: 'You can’t delete your own account.' });
+    if (removesLastAdmin(target, { active: false }, await otherActiveAdminCount(target))) {
+      return res.status(409).json({ error: `${target.name || target.email} is the only active System Admin, so the account can’t be deleted. Make someone else a System Admin first.` });
+    }
+
+    const who = `${target.name || target.email} <${target.email}>`;
+    await prisma.$transaction([
+      prisma.deletedAccount.create({
+        data: {
+          accountId: target.id, email: target.email, name: target.name || '', role: target.role,
+          subcontractorName: target.subcontractorName, accountCreatedAt: target.createdAt, deletedById: req.user.id
+        }
+      }),
+      prisma.notification.deleteMany({ where: { userId: target.id } }),
+      prisma.portalUser.delete({ where: { id: target.id } })
+    ]);
+
+    // The summary is written now: after the response the account can't be looked up.
+    res.locals.audit = {
+      entityId: target.id,
+      summary: `Deleted the ${ROLE_LABELS[target.role] || target.role} account of ${who}`,
+      details: { deleted: { email: target.email, name: target.name, role: target.role, casualWorkerId: target.casualWorkerId, createdAt: target.createdAt } }
+    };
+    if (target.role === 'sysadmin') {
+      await tellAdmins(req.user.subcontractorName, {
+        title: `System Admin account deleted: ${target.name || target.email}`,
+        body: `${req.user.name || req.user.email} deleted the System Admin account of ${who}.\n\nIf this wasn't expected, check the audit log.`
+      });
+    }
+    res.json({ deleted: true });
+  } catch (err) {
+    // A second, simultaneous delete finds the account already gone.
+    if (err.code === 'P2025') return res.status(404).json({ error: 'This account has already been deleted.', code: 'ALREADY_DONE' });
+    console.error('Failed to delete user:', err);
+    res.status(500).json({ error: 'Could not delete the account.' });
+  }
+});
+
 module.exports = router;

@@ -77,6 +77,11 @@ rule('PATCH', '/api/users/:id', {
   }
 });
 
+rule('DELETE', '/api/users/:id', {
+  category: 'account', action: 'account.delete', entityType: 'account', entity: (p) => p.id,
+  summary: ({ params }) => `Deleted account #${params.id}` // the handler gives the name (the account is gone by now)
+});
+
 // ------------------------------------------------------------------ attendance & approvals
 
 rule('POST', '/api/attendance/sync', { category: 'attendance', action: 'attendance.sync', summary: () => 'Ran a manual BioStar sync' });

@@ -334,6 +334,14 @@ System Admin safeguards:
   email fails). It must be replaced at first sign-in.
 - **The last active System Admin** can't be disabled or demoted; keep at
   least two (the Users page warns otherwise).
+- **Deleting an account** (System Admin only; Users → Manage → "Delete
+  account…", confirmed) removes only the sign-in account and its
+  notifications. The linked worker record, all attendance, approvals,
+  schedules, reports and the audit log stay; the account's name is kept in
+  `DeletedAccount` (read + add only for the portal's database user) so
+  "approved by" still shows e.g. "Sam Okello (account deleted)". You can't
+  delete your own account; deleting a System Admin is told to all of them.
+  To block someone temporarily, disable the account instead.
 - **All System Admins are emailed** when anyone is made or stops being a
   System Admin, or a System Admin is disabled, re-enabled, has their
   password reset or their two-step sign-in reset.

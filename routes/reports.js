@@ -8,6 +8,7 @@ const { renderCsv } = require('../reports/renderCsv');
 const { renderXlsx } = require('../reports/renderXlsx');
 const { renderPdf } = require('../reports/renderPdf');
 const { dateStrOf, buildResolver } = require('../sync/scheduleResolver');
+const { accountNameResolver } = require('../services/accountNames');
 
 const router = express.Router();
 
@@ -80,23 +81,23 @@ async function loadApprovalUnits(user, period) {
 
   const units = await prisma.approvalUnit.findMany({ where });
   if (units.length === 0) return [];
-  const [crews, shifts, counts, approvers] = await Promise.all([
+  const [crews, shifts, counts, approverName] = await Promise.all([
     prisma.crew.findMany({ where: { subcontractorName: user.subcontractorName } }),
     prisma.shift.findMany(),
     prisma.dailyAttendanceSummary.groupBy({ by: ['approvalKey'], where: { approvalKey: { in: units.map((u) => u.key) } }, _count: { _all: true } }),
-    prisma.portalUser.findMany({ where: { id: { in: units.map((u) => u.approvedById).filter(Boolean) } }, select: { id: true, name: true, email: true } })
+    // Still named if the approver's account has since been deleted.
+    accountNameResolver(units.map((u) => u.approvedById))
   ]);
   const crewName = new Map(crews.map((c) => [c.id, c.name]));
   const shiftName = new Map(shifts.map((s) => [s.id, s.name]));
   const count = new Map(counts.map((c) => [c.approvalKey, c._count._all]));
-  const approver = new Map(approvers.map((a) => [a.id, a.name || a.email]));
   return units.map((u) => ({
     ...u,
     label: u.kind === 'crew-shift'
       ? `${crewName.get(u.crewId) || 'Crew'} · ${shiftName.get(u.shiftId) || ''} · ${dateStrOf(u.date)}`
       : `Permanent staff · ${u.month}`,
     rows: count.get(u.key) || 0,
-    approvedByName: approver.get(u.approvedById) || ''
+    approvedByName: approverName(u.approvedById, u.approvedAt)
   }));
 }
 

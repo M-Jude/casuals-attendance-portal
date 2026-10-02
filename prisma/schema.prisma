@@ -295,6 +295,23 @@ model CrewCycleProposal {
 // who did it, when, from which IP address and device. The user's details are
 // copied in rather than linked, so an entry reads the same after the account
 // is renamed or removed. Rows are insert-only; nothing updates or deletes them.
+// A deleted portal account's name, kept so the records it touched — "approved
+// by", the audit trail — still say who it was. The account itself, and its
+// notifications, are gone; worker and attendance records are never touched.
+model DeletedAccount {
+  id                Int      @id @default(autoincrement())
+  accountId         Int // the PortalUser id it had
+  email             String
+  name              String
+  role              String
+  subcontractorName String
+  accountCreatedAt  DateTime
+  deletedAt         DateTime @default(now())
+  deletedById       Int?
+
+  @@index([accountId])
+}
+
 model AuditLog {
   id                Int      @id @default(autoincrement())
   createdAt         DateTime @default(now())
