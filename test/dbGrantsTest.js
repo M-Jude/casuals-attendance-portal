@@ -23,8 +23,11 @@ check('audit log: never edit or delete (revoked, harmless if never granted)',
   plan.some((p) => p.optional && p.sql === "REVOKE UPDATE, DELETE ON `casuals_portal`.`AuditLog` FROM 'casuals_app'@'localhost'"));
 check('no UPDATE or DELETE grant on the audit log', !sql.some((x) => /^GRANT .*(UPDATE|DELETE).*`AuditLog`/.test(x)));
 check('Prisma’s migrations table is left alone', !sql.some((x) => x.includes('_prisma_migrations')));
-check('nothing database-wide (no `db`.*)', !sql.some((x) => /`\.\*/.test(x)));
-check('names are quoted safely', planGrants({ database: 'd', tables: ['a`b'], user: "o'x", host: 'h' })[0].sql === "GRANT SELECT, INSERT, UPDATE, DELETE ON `d`.`a``b` TO 'o\\'x'@'h'");
+check('nothing granted database-wide (no GRANT … ON `db`.*)', !sql.some((x) => /^GRANT .*`\.\*/.test(x)));
+check('any database-wide privileges are cleared first (they would override the audit-log limits)',
+  plan[0].optional && plan[0].sql === "REVOKE ALL PRIVILEGES ON `casuals_portal`.* FROM 'casuals_app'@'localhost'"
+  && plan[1].sql === "REVOKE GRANT OPTION ON `casuals_portal`.* FROM 'casuals_app'@'localhost'");
+check('names are quoted safely', planGrants({ database: 'd', tables: ['a`b'], user: "o'x", host: 'h' }).find((p) => p.sql.startsWith('GRANT')).sql === "GRANT SELECT, INSERT, UPDATE, DELETE ON `d`.`a``b` TO 'o\\'x'@'h'");
 
 let failed = 0;
 for (const [label, passed] of checks) {

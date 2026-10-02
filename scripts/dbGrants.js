@@ -38,7 +38,13 @@ function parseDbUrl(url, label) {
 // The GRANT / REVOKE statements for one app user@host — pure, so it's tested.
 function planGrants({ database, tables, user, host }) {
   const grantee = `${s(user)}@${s(host)}`;
-  const statements = [];
+  // MySQL adds privileges up across levels, so a database-wide grant (e.g.
+  // UPDATE on casuals_portal.*) would override the table-level limits
+  // below. Clear any first; "no such grant" is fine.
+  const statements = [
+    { sql: `REVOKE ALL PRIVILEGES ON ${q(database)}.* FROM ${grantee}`, optional: true },
+    { sql: `REVOKE GRANT OPTION ON ${q(database)}.* FROM ${grantee}`, optional: true }
+  ];
   for (const table of tables) {
     if (SKIP.includes(table)) continue;
     const target = `${q(database)}.${q(table)}`;
@@ -124,13 +130,29 @@ async function verify() {
     await expectDenied('change the table structure', 'ALTER TABLE `AuditLog` COMMENT = \'\'');
   } catch (err) {
     results.push(['connect and read as the app user', false, err.message.split('\n').pop()]);
-  } finally {
-    await db.$disconnect();
   }
 
   console.log(`\nChecks as ${app.user}:`);
   for (const [label, ok, note] of results) console.log(`  [${ok ? 'OK  ' : 'FAIL'}] ${label} — ${note}`);
   const failed = results.filter(([, ok]) => !ok).length;
+
+  if (failed) {
+    // Any user may see its own grants: show where the extra rights come from.
+    try {
+      const [{ who }] = await db.$queryRawUnsafe('SELECT CURRENT_USER() AS who');
+      const grants = await db.$queryRawUnsafe('SHOW GRANTS');
+      console.log(`\nMySQL matched this login to ${who}, which has:`);
+      for (const row of grants) console.log(`  ${Object.values(row)[0]}`);
+      console.log('\nThe audit log can only be protected if none of these give UPDATE or DELETE on the whole server');
+      console.log('(ON *.*) or the whole database. Remove those as root, e.g.');
+      console.log(`  REVOKE ALL PRIVILEGES, GRANT OPTION FROM ${who};`);
+      console.log('then run this script again with --apply (it puts back the table-by-table permissions).');
+      console.log('If the login matched a different account than expected (e.g. one with host %), remove or fix that account.');
+    } catch (err) {
+      console.log(`\n(Couldn’t list this login’s grants: ${err.message.split('\n').pop()})`);
+    }
+  }
+  await db.$disconnect();
   if (failed) throw new Error(`${failed} check${failed === 1 ? '' : 's'} failed — the audit log is not protected as intended.`);
   console.log('The portal’s database user can read and add audit entries but cannot change or delete them.');
 }
