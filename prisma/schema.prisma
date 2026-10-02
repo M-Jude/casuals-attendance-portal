@@ -58,6 +58,14 @@ model PortalUser {
   mfaPendingSecret  String?
   mfaEnabledAt      DateTime?
   mfaLastStep       Int?
+  // "app" (authenticator) or "email" (a code emailed at each sign-in). App
+  // users can also ask for an emailed code instead. The current emailed
+  // code is kept only as a hash, with its expiry and wrong-guess count.
+  mfaMethod             String?
+  mfaEmailCodeHash      String?
+  mfaEmailCodeExpiresAt DateTime?
+  mfaEmailCodeSentAt    DateTime?
+  mfaEmailCodeAttempts  Int       @default(0)
   name              String        @default("")
   role              String        @default("hr")
   crewId            Int?

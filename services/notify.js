@@ -126,4 +126,31 @@ async function sendAccountEmail({ kind, email, name, password }) {
   }
 }
 
-module.exports = { notifyUsers, usersWithRoles, sendAccountEmail, emailHealth };
+// The emailed code for two-step sign-in. Throws if it can't be sent (the
+// caller tells the person to try again or use their app).
+async function sendSignInCode({ email, name, code }) {
+  const mailer = getTransporter();
+  if (!mailer) throw new Error('email is not set up on the server');
+  try {
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: `[Casuals Portal] Your sign-in code: ${code}`,
+      text: [
+        `Hello${name ? ` ${name}` : ''},`,
+        '',
+        `Your sign-in code is: ${code}`,
+        '',
+        'It works once and expires in 10 minutes.',
+        '',
+        'If you didn’t just try to sign in, someone knows your password: change it straight away and tell UCAA ICT.'
+      ].join('\n')
+    });
+    recordEmail(true);
+  } catch (err) {
+    recordEmail(false, err);
+    throw err;
+  }
+}
+
+module.exports = { notifyUsers, usersWithRoles, sendAccountEmail, sendSignInCode, emailHealth };

@@ -113,6 +113,12 @@ function LoginFrame({ title, sub, children }) {
         .portal-secret code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 14px; color: var(--text); word-break: break-all; }
         .portal-steps { font-size: 14px; color: var(--text); margin: 0 0 10px; padding-left: 20px; line-height: 1.5; }
         .portal-login__help { font-size: 12.5px; color: var(--muted); text-align: center; margin: 14px 0 0; }
+        .portal-login button.portal-login__alt {
+          background: var(--panel);
+          color: var(--accent);
+          border: 1px solid var(--accent);
+        }
+        .portal-login button.portal-login__alt:hover:not(:disabled) { background: var(--accent-bg); }
         .portal-login button.portal-login__secondary {
           background: none;
           color: var(--muted);
@@ -200,7 +206,14 @@ export default function PortalLogin({ onLogin }) {
 
       const data = await res.json();
       if (data.mfaRequired || data.mfaSetupRequired) {
-        setTwoStep({ mode: data.mfaRequired ? 'verify' : 'setup', mfaToken: data.mfaToken });
+        setTwoStep({
+          mode: data.mfaRequired ? 'verify' : 'setup',
+          mfaToken: data.mfaToken,
+          method: data.method,
+          emailHint: data.emailHint,
+          emailSent: data.emailSent,
+          emailError: data.emailError
+        });
         return;
       }
       onLogin(data.token);
@@ -245,25 +258,67 @@ export default function PortalLogin({ onLogin }) {
   );
 }
 
-// The second step for System Admins: the 6-digit code from their
-// authenticator app — or, the first time (and after a reset), scanning a QR
-// code into the app and confirming it with a code.
-function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
+// The second step for System Admins: a 6-digit code from their
+// authenticator app or from an email. The first time (and after a reset)
+// they choose which: scanning a QR code into an app, or having codes
+// emailed. App users can always ask for an emailed code instead.
+function TwoStepScreen({ mode, mfaToken, method, emailHint, emailSent, emailError, onSignedIn, onRestart }) {
   const [code, setCode] = useState('');
+  const [choice, setChoice] = useState(null); // setup: 'app' | 'email'
+  const [channel, setChannel] = useState(method === 'email' ? 'email' : 'app'); // sign-in
   const [setup, setSetup] = useState(null); // { qrDataUrl, secret }
-  const [error, setError] = useState('');
+  const [error, setError] = useState(method === 'email' && emailSent === false ? (emailError || 'The code couldn’t be emailed.') : '');
+  const [note, setNote] = useState(method === 'email' && emailSent ? `We’ve emailed a code to ${emailHint}.` : '');
   const [submitting, setSubmitting] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [cooldown, setCooldown] = useState(method === 'email' && emailSent ? 60 : 0);
   const started = useRef(false);
+  const usingEmail = mode === 'setup' ? choice === 'email' : channel === 'email';
 
+  // Seconds until another email may be asked for.
   useEffect(() => {
-    if (mode !== 'setup' || started.current) return;
+    if (cooldown <= 0) return undefined;
+    const id = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [cooldown]);
+
+  // Setting up the app: fetch a QR code once.
+  useEffect(() => {
+    if (mode !== 'setup' || choice !== 'app' || started.current) return;
     started.current = true;
     postJson('/api/auth/mfa/setup', { mfaToken }).then(({ status, body }) => {
       if (status === 401) onRestart(body.error);
       else if (status !== 200) setError(body.error || 'Could not start the setup. Sign in again.');
       else setSetup(body);
     }).catch(() => setError('Could not reach the server. Check your connection and try again.'));
-  }, [mode, mfaToken, onRestart]);
+  }, [mode, choice, mfaToken, onRestart]);
+
+  async function sendEmail() {
+    if (sending || cooldown > 0) return;
+    setSending(true);
+    setError('');
+    setNote('');
+    try {
+      const { status, body } = await postJson('/api/auth/mfa/email/send', { mfaToken });
+      if (status === 200) { setNote(`We’ve emailed a code to ${body.to}. It works once, for 10 minutes.`); setCooldown(60); setCode(''); }
+      else if (status === 401) onRestart(body.error);
+      else { setError(body.error || 'The code couldn’t be sent. Try again.'); if (body.wait) setCooldown(body.wait); }
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.');
+    }
+    setSending(false);
+  }
+
+  function switchToEmail() {
+    setChannel('email');
+    setCode('');
+    sendEmail();
+  }
+
+  function chooseEmail() {
+    setChoice('email');
+    sendEmail();
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -271,7 +326,9 @@ function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
     setError('');
     setSubmitting(true);
     try {
-      const { status, body } = await postJson(mode === 'setup' ? '/api/auth/mfa/enable' : '/api/auth/mfa/verify', { mfaToken, code });
+      const { status, body } = mode === 'setup'
+        ? await postJson('/api/auth/mfa/enable', { mfaToken, code, method: choice })
+        : await postJson('/api/auth/mfa/verify', { mfaToken, code, channel });
       if (status === 200 && body.token) { onSignedIn(body.token); return; }
       if (status === 401) { onRestart(body.error); return; }
       setError(body.error || 'Something went wrong. Try again.');
@@ -281,6 +338,12 @@ function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
     }
     setSubmitting(false);
   }
+
+  const resendButton = (
+    <button type="button" className="portal-login__secondary" disabled={sending || cooldown > 0} onClick={sendEmail}>
+      {sending ? 'Sending…' : cooldown > 0 ? `Send a new code (${cooldown}s)` : 'Send a new code'}
+    </button>
+  );
 
   const codeField = (
     <label className="portal-field">
@@ -299,11 +362,41 @@ function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
     </label>
   );
 
-  if (mode === 'setup') {
+  if (mode === 'setup' && !choice) {
     return (
       <LoginFrame
         title="Set up two-step sign-in"
-        sub="System Admins sign in with their password and a code from an authenticator app on their phone (Google Authenticator, Microsoft Authenticator or similar)."
+        sub="System Admins confirm each sign-in with a 6-digit code as well as their password. Choose how you’d like to get it:"
+      >
+        <button type="button" onClick={() => setChoice('app')}>Authenticator app on my phone (recommended)</button>
+        <p className="portal-login__help" style={{ margin: '6px 0 14px' }}>Google Authenticator, Microsoft Authenticator or similar. Works without signal; you can still ask for an emailed code when your phone isn’t with you.</p>
+        <button type="button" className="portal-login__alt" onClick={chooseEmail}>Email me a code each time</button>
+        <p className="portal-login__help" style={{ margin: '6px 0 14px' }}>Sent to {emailHint} whenever you sign in.</p>
+        <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
+      </LoginFrame>
+    );
+  }
+
+  if (mode === 'setup' && choice === 'email') {
+    return (
+      <LoginFrame title="Set up two-step sign-in" sub="Enter the 6-digit code we’ve emailed you to confirm it reaches you.">
+        <form onSubmit={submit}>
+          {note && <p className="portal-login__help" style={{ margin: '0 0 14px' }}>{note}</p>}
+          {codeField}
+          {error && <div className="portal-error" role="alert">{error}</div>}
+          <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Confirm and sign in'}</button>
+          {resendButton}
+          <button type="button" className="portal-login__secondary" onClick={() => { setChoice(null); setError(''); setNote(''); setCode(''); }}>Choose another way</button>
+        </form>
+      </LoginFrame>
+    );
+  }
+
+  if (mode === 'setup') {
+    return (
+      <LoginFrame
+        title="Set up your authenticator app"
+        sub="Scan this into Google Authenticator, Microsoft Authenticator or a similar app on your phone."
       >
         {!setup && !error && <p className="portal-login__sub">Preparing…</p>}
         {setup && (
@@ -319,7 +412,7 @@ function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
             {codeField}
             {error && <div className="portal-error" role="alert">{error}</div>}
             <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Confirm and sign in'}</button>
-            <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
+            <button type="button" className="portal-login__secondary" onClick={() => { setChoice(null); setError(''); setCode(''); }}>Choose another way</button>
           </form>
         )}
         {!setup && error && (
@@ -332,14 +425,34 @@ function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
     );
   }
 
+  if (usingEmail) {
+    return (
+      <LoginFrame title="Check your email" sub={`Enter the 6-digit code we’ve emailed to ${emailHint}.`}>
+        <form onSubmit={submit}>
+          {note && <p className="portal-login__help" style={{ margin: '0 0 14px' }}>{note}</p>}
+          {codeField}
+          {error && <div className="portal-error" role="alert">{error}</div>}
+          <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Sign in'}</button>
+          {resendButton}
+          {method !== 'email' && (
+            <button type="button" className="portal-login__secondary" onClick={() => { setChannel('app'); setError(''); setNote(''); setCode(''); }}>Use my authenticator app instead</button>
+          )}
+          <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
+          <p className="portal-login__help">Nothing arrived? Check your spam folder, wait a minute and send a new code — or ask another System Admin to reset your two-step sign-in.</p>
+        </form>
+      </LoginFrame>
+    );
+  }
+
   return (
     <LoginFrame title="Enter your code" sub="Open your authenticator app and enter the 6-digit code shown for “UCAA Casuals Portal”.">
       <form onSubmit={submit}>
         {codeField}
         {error && <div className="portal-error" role="alert">{error}</div>}
         <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Sign in'}</button>
+        <button type="button" className="portal-login__secondary" disabled={sending} onClick={switchToEmail}>{sending ? 'Sending…' : 'Email me a code instead'}</button>
         <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
-        <p className="portal-login__help">Lost your phone? Ask another System Admin to reset your two-step sign-in.</p>
+        <p className="portal-login__help">Phone not with you? Use “Email me a code instead”. Lost it? Ask another System Admin to reset your two-step sign-in.</p>
       </form>
     </LoginFrame>
   );

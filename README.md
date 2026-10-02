@@ -316,11 +316,17 @@ job only covers the recent lookback window.
 
 System Admin safeguards:
 - **Two-step sign-in**: a System Admin's password alone never gives a
-  session; they also enter a 6-digit code from an authenticator app (set
-  up by scanning a QR code at their first sign-in). Sessions without the
-  code are refused, and resetting someone's authenticator ends theirs. A
-  lost phone: another System Admin uses Users → Manage → "Reset two-step
-  sign-in"; if none can, run
+  session; they also enter a 6-digit code. At their first sign-in they
+  choose how they get it: an **authenticator app** (scan a QR code) or
+  **email** (a code is emailed at each sign-in). App users can also choose
+  "Email me a code instead" on the sign-in screen. Emailed codes work once,
+  for 10 minutes, and are void after 5 wrong tries; at most one email a
+  minute; only a hash is stored, and codes are masked in the audit log.
+  Email codes depend on email working — if it's down, use the app, or have
+  another System Admin reset the method. Sessions without the code are
+  refused, and resetting someone's two-step sign-in ends theirs. A lost
+  phone or a change of method: another System Admin uses Users → Manage →
+  "Reset two-step sign-in"; if none can, run
   `node scripts/seedPortalUser.js reset-two-step <email>` on the server.
 - **Generated temporary passwords**: new accounts and resets get a
   10-character password made up by the portal and emailed to the account

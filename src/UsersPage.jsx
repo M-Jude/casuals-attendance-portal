@@ -138,7 +138,7 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDi
         <div style={{ fontWeight: 600 }}>{account.name || '—'}{!account.active && <span className="chip chip--critical" style={{ marginLeft: 8 }}>disabled</span>}
           {account.active && account.mustChangePassword && <span className="chip chip--warn" style={{ marginLeft: 8 }} title="Still on the password they were given — they'll choose their own at their next sign-in.">temporary password</span>}
           {isAdminAccount && account.active && (account.mfaEnabledAt
-            ? <span className="chip chip--ok" style={{ marginLeft: 8 }} title={`Two-step sign-in set up ${formatDateLabel(account.mfaEnabledAt.slice(0, 10))}`}>2-step</span>
+            ? <span className="chip chip--ok" style={{ marginLeft: 8 }} title={`Two-step sign-in set up ${formatDateLabel(account.mfaEnabledAt.slice(0, 10))}`}>2-step: {account.mfaMethod === 'email' ? 'email' : 'app'}</span>
             : <span className="chip chip--warn" style={{ marginLeft: 8 }} title="They'll set up an authenticator app at their next sign-in.">2-step not set up</span>)}</div>
         {account.worker
           ? <div className="small muted">Worker {account.worker.biostarUserId}{account.worker.status !== 'active' && ' · inactive in BioStar'}</div>
@@ -214,10 +214,10 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDi
               <div className="manage__block">
                 <div className="manage__label">Two-step sign-in</div>
                 <div className="form-row">
-                  <span className="small">{account.mfaEnabledAt ? `Set up ${formatDateLabel(account.mfaEnabledAt.slice(0, 10))}` : 'Not set up yet — they’ll do it at their next sign-in.'}</span>
+                  <span className="small">{account.mfaEnabledAt ? `${account.mfaMethod === 'email' ? 'Emailed codes' : 'Authenticator app'}, set up ${formatDateLabel(account.mfaEnabledAt.slice(0, 10))}` : 'Not set up yet — they’ll do it at their next sign-in.'}</span>
                   {account.mfaEnabledAt && <button className="btn btn--small" disabled={busy} onClick={resetTwoStep}>Reset two-step sign-in</button>}
                 </div>
-                <p className="small muted" style={{ margin: '6px 0 0' }}>For a lost or replaced phone. They’re signed out and set up a new authenticator next time they sign in.</p>
+                <p className="small muted" style={{ margin: '6px 0 0' }}>For a lost or replaced phone, or to switch method. They’re signed out and choose again (app or email) next time they sign in.</p>
               </div>
             )}
             <div className="form-row" style={{ marginTop: 10 }}>
