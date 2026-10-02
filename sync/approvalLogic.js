@@ -124,7 +124,11 @@ function isEscalationDue(unit, now) {
 //   sysadmin   — always (super user)
 function canApprove(user, unit, now) {
   if (unit.status === 'approved') return { ok: false, reason: 'Already approved.' };
-  if (user.role === 'sysadmin') return { ok: true };
+  if (user.role === 'auditor') return { ok: false, reason: 'Auditors can view approvals but not approve them.' };
+  // Approving attendance is a payroll decision, not an IT one: System Admins
+  // (UCAA ICT) can see every batch but approving belongs to supervisors, HR
+  // and the Admin Assistant.
+  if (user.role === 'sysadmin') return { ok: false, reason: 'System Admins can view approvals but not approve them — that’s for the crew’s supervisor, HR or the Admin Assistant.' };
   const due = now >= new Date(unit.dueAt).getTime();
   if (unit.kind === 'crew-shift') {
     if (user.role === 'supervisor' && user.crewId === unit.crewId) {

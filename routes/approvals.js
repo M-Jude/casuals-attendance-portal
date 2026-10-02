@@ -8,7 +8,11 @@ const { dateStrOf } = require('../sync/scheduleResolver');
 const { normalizeDoubles } = require('../reports/doubleShift');
 
 const router = express.Router();
-const APPROVERS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
+const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
+// Who may look at batches: the approvers, plus the System Admin and the
+// Auditor, who see every batch (unitScope gives roles it doesn't name
+// everything) but can't approve: canApprove refuses them.
+const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor'];
 const MAX_COMMENT = 2000;
 
 // Which batches a user sees under "my approvals":
@@ -78,7 +82,7 @@ async function describeUnits(units, user) {
   });
 }
 
-router.get('/approvals', authenticate, requireRole(...APPROVERS), async (req, res) => {
+router.get('/approvals', authenticate, requireRole(...VIEWERS), async (req, res) => {
   const status = ['pending', 'approved', 'all'].includes(req.query.status) ? req.query.status : 'pending';
   const where = unitScope(req.user, req.query.scope);
   if (status === 'pending') where.status = { in: ['pending', 'reopened'] };
@@ -137,7 +141,7 @@ async function describeDoubles(rows, key) {
   }
 }
 
-router.get('/approvals/:id', authenticate, requireRole(...APPROVERS), async (req, res) => {
+router.get('/approvals/:id', authenticate, requireRole(...VIEWERS), async (req, res) => {
   try {
     const unit = await loadVisibleUnit(req.user, parseInt(req.params.id, 10));
     if (!unit) return res.status(404).json({ error: 'Not found.' });

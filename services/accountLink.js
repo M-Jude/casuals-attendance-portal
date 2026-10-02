@@ -15,8 +15,9 @@ const { buildResolver } = require('../sync/scheduleResolver');
 const { eatDateStr } = require('../sync/shiftEngine');
 const { notifyUsers, usersWithRoles } = require('./notify');
 
-// Roles that never have a worker record (the Director role, when added).
-const NO_WORKER_LINK = ['director'];
+// Roles that never have a worker record: UCAA auditors (and the Director
+// role, when added) aren't casual workers.
+const NO_WORKER_LINK = ['director', 'auditor'];
 
 const httpError = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
 const todayEat = () => eatDateStr(Date.now());

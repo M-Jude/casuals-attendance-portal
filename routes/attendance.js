@@ -4,7 +4,7 @@ const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { syncAttendance } = require('../sync/attendanceSync');
 const { recomputeLookback } = require('../services/recompute');
-const { withSyncLock, markFullSync } = require('../services/liveSync');
+const { withSyncLock, markFullSync, markFullSyncFailed } = require('../services/liveSync');
 
 const router = express.Router();
 
@@ -25,9 +25,14 @@ router.post('/attendance/sync', authenticate, requireRole('sysadmin', 'hr', 'adm
   try {
     // Waits for any scheduled/live sync already running rather than overlapping it.
     await withSyncLock(async () => {
-      await syncAttendance();
-      await recomputeLookback();
-      markFullSync();
+      try {
+        await syncAttendance();
+        await recomputeLookback();
+        markFullSync();
+      } catch (err) {
+        markFullSyncFailed(err);
+        throw err;
+      }
     });
 
     res.json({ success: true });
@@ -40,7 +45,7 @@ router.post('/attendance/sync', authenticate, requireRole('sysadmin', 'hr', 'adm
 });
 
 // Raw punches — an audit view, not something Finance or supervisors need.
-router.get('/attendance', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant'), async (req, res) => {
+router.get('/attendance', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'auditor'), async (req, res) => {
   const { from, to } = req.query; // optional date range filter, YYYY-MM-DD
   const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);

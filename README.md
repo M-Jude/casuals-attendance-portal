@@ -164,6 +164,47 @@ Before exposing it, make sure `JWT_SECRET` is a fresh random value. Once
 everyone uses the public URL, `HOST=127.0.0.1` in `.env` stops the portal
 listening on the LAN at all (the tunnel connects locally).
 
+### Database users (protecting the audit log)
+
+The portal should not connect to MySQL as `root`. With two dedicated users,
+the running portal can read and add audit-log entries but **cannot edit or
+delete them** — even someone who gets hold of the portal's database password
+can't quietly rewrite the trail.
+
+| MySQL user | Used by | Can |
+|---|---|---|
+| `casuals_app` | the running portal (`DATABASE_URL`) | read/write ordinary tables; **read + add only** on `AuditLog`; no table changes |
+| `casuals_migrate` | the deploy only (`MIGRATE_DATABASE_URL`) | apply migrations; keep `casuals_app`'s permissions current |
+| `root` | database administrators only | everything — no longer in the portal's `.env` |
+
+`casuals_app` gets its rights table by table (`scripts/dbGrants.js`); every
+deploy re-applies them after migrating, so new tables are covered, and then
+checks — as `casuals_app` — that editing or deleting audit entries is refused.
+
+One-time switch-over, on the server:
+
+1. Make two passwords (letters and digits, so no URL escaping is needed):
+   `node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"` (run it twice).
+2. Put them into `deploy\mysql\setup-users.sql` and run it as root
+   (MySQL Workbench, or `mysql -u root -p -P 4436 < deploy\mysql\setup-users.sql`).
+3. In `C:\apps\casuals-attendance-portal\.env` (keep a copy of the old
+   `DATABASE_URL` line until step 5 works):
+   - change `DATABASE_URL` to
+     `"mysql://casuals_app:<app password>@localhost:4436/casuals_portal"`
+   - add
+     `MIGRATE_DATABASE_URL="mysql://casuals_migrate:<migrate password>@localhost:4436/casuals_portal"`
+
+   (The running portal keeps its old connection until it restarts.)
+4. From `C:\apps\casuals-attendance-portal`, run `node scripts/dbGrants.js`
+   to see the plan, then `node scripts/dbGrants.js --apply`. It grants the
+   permissions, then signs in as `casuals_app` and confirms that reading
+   works and editing/deleting audit entries is refused.
+5. `Restart-Service CasualsPortal` (as administrator) and check that
+   **System status** shows the database as OK. Then delete the old root line.
+
+If step 4 or 5 fails, put the old `DATABASE_URL` back and restart — nothing
+else has changed.
+
 ## Verifying the setup
 
 1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against
@@ -268,11 +309,42 @@ job only covers the recent lookback window.
 
 | Role | Sees | Does |
 |---|---|---|
-| System Admin | everything | any account, crews and cycles, shift rules, approves anything |
-| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Does not approve attendance** (separation of duties). Signs in with password + authenticator code |
+| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+
+System Admin safeguards:
+- **Two-step sign-in**: a System Admin's password alone never gives a
+  session; they also enter a 6-digit code from an authenticator app (set
+  up by scanning a QR code at their first sign-in). Sessions without the
+  code are refused, and resetting someone's authenticator ends theirs. A
+  lost phone: another System Admin uses Users → Manage → "Reset two-step
+  sign-in"; if none can, run
+  `node scripts/seedPortalUser.js reset-two-step <email>` on the server.
+- **Generated temporary passwords**: new accounts and resets get a
+  10-character password made up by the portal and emailed to the account
+  holder, so no admin chooses or sees it (it's shown once only if the
+  email fails). It must be replaced at first sign-in.
+- **The last active System Admin** can't be disabled or demoted; keep at
+  least two (the Users page warns otherwise).
+- **All System Admins are emailed** when anyone is made or stops being a
+  System Admin, or a System Admin is disabled, re-enabled, has their
+  password reset or their two-step sign-in reset.
+
+**System status** (System Admin, Auditor) shows the portal version and last
+deploy, database, BioStar sync, email, shifts/workers, accounts (incl.
+two-step coverage) and approvals at a glance. Deploys write `version.json`
+for it.
 | Admin Assistant | everything | schedules and exceptions, approves escalated shifts |
 | Finance | approved records only | read-only, exports/PDF |
 | Shift Supervisor | their crew's records | approves their crew's shifts, records exceptions for their crew |
+| Auditor (internal UCAA audit) | everything: all records, raw punches, every approval batch, schedules and their history, accounts, the full audit log (System Admin included) | read-only: views, reports and exports. Created by the System Admin only; never linked to a worker record; gets no notifications |
+
+The Auditor's read-only status is enforced in `middleware/authenticate.js`
+for every request, not just by leaving the role off each route: apart from
+signing out, changing their own password and logging a print, any request
+from an auditor that isn't a read is refused (403 `READ_ONLY`).
+`test/auditorRoleTest.js` also checks that no route that changes data
+names the auditor.
 
 - Each crew's Day or Night shift on a date is one approval batch
   (`ApprovalUnit` kind `crew-shift`). It becomes approvable when the shift

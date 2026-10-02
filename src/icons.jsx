@@ -16,6 +16,7 @@ const PATHS = {
   more: <><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></>,
   chevron: <path d="m9.5 6 6 6-6 6" />,
   audit: <><path d="M12 2.8 4.5 5.6v5.8c0 4.6 3.1 8.3 7.5 9.8 4.4-1.5 7.5-5.2 7.5-9.8V5.6z" /><path d="M9 11.5h6M9 15h4" /></>,
+  status: <path d="M3 12h4l2.5-6.5 4.5 13 2.5-6.5H21" />,
   install: <><path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5" /><path d="M4.5 16.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2" /></>,
   share: <><path d="M12 15V3.5M8 7.5l4-4 4 4" /><path d="M8 11H6.5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H16" /></>,
   offline: <><path d="M3 3l18 18" /><path d="M8.5 16.5a5 5 0 0 1 7 0M5 13a10 10 0 0 1 5.2-2.8M19 13a10 10 0 0 0-2.5-1.9M2 9.5a15 15 0 0 1 4.3-2.8M22 9.5A15 15 0 0 0 11 5.1" /><circle cx="12" cy="19.5" r="0.6" /></>

@@ -2,24 +2,25 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
-const { requireRole, ROLES, CAN_CREATE } = require('../middleware/requireRole');
+const { requireRole, ROLES, ROLE_LABELS, CAN_CREATE } = require('../middleware/requireRole');
 const { resolveWorkerLink } = require('../services/accountLink');
 const { setWorkerSchedule } = require('../services/workerSchedule');
 const { todayEat } = require('../services/recompute');
 
-const { passwordProblem } = require('../services/passwordPolicy');
+const { generateTemporaryPassword } = require('../services/passwordPolicy');
 const { sendAccountEmail } = require('../services/notify');
+const { removesLastAdmin, otherActiveAdminCount, tellAdmins } = require('../services/adminSafeguards');
 
 const router = express.Router();
 const SALT_ROUNDS = 12;
 
 const PUBLIC_FIELDS = {
-  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true,
+  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true, mfaEnabledAt: true,
   crew: { select: { id: true, name: true } },
   worker: { select: { id: true, name: true, biostarUserId: true, status: true } }
 };
 
-router.get('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
+router.get('/users', authenticate, requireRole('sysadmin', 'hr', 'auditor'), async (req, res) => {
   try {
     const users = await prisma.portalUser.findMany({
       where: { subcontractorName: req.user.subcontractorName },
@@ -35,12 +36,15 @@ router.get('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, re
 
 // Create an account. A supervisor must be linked to their worker record and
 // leads the crew that worker rotates with; other roles may link one too.
+// The password is generated here, never chosen by the person creating the
+// account: it's emailed to the new user and must be replaced at first
+// sign-in. Only if that email fails is it returned (once) so it can be
+// passed on another way.
 router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
-  const { email, name, role, password, casualWorkerId } = req.body || {};
+  const { email, name, role, casualWorkerId } = req.body || {};
   if (typeof email !== 'string' || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'A valid email is required.' });
   if (!(CAN_CREATE[req.user.role] || []).includes(role)) return res.status(403).json({ error: 'You cannot create an account with that role.' });
-  const weak = passwordProblem(password);
-  if (weak) return res.status(400).json({ error: weak });
+  const password = generateTemporaryPassword();
 
   try {
     const { worker, crewId } = await resolveWorkerLink({ casualWorkerId, role, subcontractorName: req.user.subcontractorName });
@@ -58,7 +62,7 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
         crewId: role === 'supervisor' ? crewId : null,
         casualWorkerId: worker ? worker.id : null,
         passwordHash: await bcrypt.hash(password, SALT_ROUNDS),
-        mustChangePassword: true, // the creator chose it: one-time, changed at first sign-in
+        mustChangePassword: true, // generated: one-time, replaced at first sign-in
         subcontractorName: req.user.subcontractorName,
         createdById: req.user.id
       },
@@ -66,8 +70,17 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
     });
     // Email them the sign-in details; the account stands either way.
     const mail = await sendAccountEmail({ kind: 'created', email: user.email, name: user.name, password });
-    res.locals.audit = { entityId: user.id, details: { welcomeEmail: mail.sent ? 'sent' : `not sent: ${mail.error}` } };
-    res.status(201).json({ user, emailed: mail.sent, emailError: mail.error || null });
+    res.locals.audit = {
+      entityId: user.id,
+      details: { welcomeEmail: mail.sent ? 'sent' : `not sent: ${mail.error}`, ...(mail.sent ? {} : { temporaryPasswordShownToCreator: true }) }
+    };
+    if (role === 'sysadmin') {
+      await tellAdmins(req.user.subcontractorName, {
+        title: `New System Admin: ${user.name} <${user.email}>`,
+        body: `${req.user.name || req.user.email} created a System Admin account for ${user.name} <${user.email}>.\n\nIf this wasn't expected, disable the account in Users and investigate.`
+      });
+    }
+    res.status(201).json({ user, emailed: mail.sent, emailError: mail.error || null, ...(mail.sent ? {} : { temporaryPassword: password }) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     // Two identical requests at once (a double click): the second hits the
@@ -78,13 +91,14 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
   }
 });
 
-// Update an account: name, role, worker link, active flag, password — or move
-// a supervisor to another crew (moveToCrewId), which moves their worker record
-// to that crew's rotation and makes them its supervisor. HR may only change
-// the roles it can create (not HR or System Admin accounts).
+// Update an account: name, role, worker link, active flag, a new generated
+// temporary password (resetPassword: true) — or move a supervisor to
+// another crew (moveToCrewId), which moves their worker record to that
+// crew's rotation and makes them its supervisor. HR may only change the
+// roles it can create (not HR, Auditor or System Admin accounts).
 router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { name, role, active, password, casualWorkerId, moveToCrewId, effectiveFrom } = req.body || {};
+  const { name, role, active, resetPassword, resetTwoStep, casualWorkerId, moveToCrewId, effectiveFrom } = req.body || {};
 
   try {
     const target = await prisma.portalUser.findFirst({ where: { id, subcontractorName: req.user.subcontractorName } });
@@ -96,6 +110,9 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
       return res.status(403).json({ error: 'You cannot assign that role.' });
     }
     if (active === false && target.id === req.user.id) return res.status(400).json({ error: 'You cannot disable your own account.' });
+    if (removesLastAdmin(target, { role, active }, await otherActiveAdminCount(target))) {
+      return res.status(409).json({ error: `${target.name || target.email} is the only active System Admin, so they can't be disabled or given another role. Make someone else a System Admin first.` });
+    }
 
     // Moving a supervisor: their worker record joins the new crew's rotation,
     // and they stay supervisor of it (the UI has already asked HR to confirm).
@@ -118,13 +135,24 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
     if (typeof name === 'string' && name.trim()) data.name = name.trim();
     if (role !== undefined) data.role = role;
     if (typeof active === 'boolean') data.active = active;
-    if (password !== undefined) {
-      const weak = passwordProblem(password);
-      if (weak) return res.status(400).json({ error: weak });
+    // A new generated one-time password, emailed to them below.
+    const password = resetPassword === true ? generateTemporaryPassword() : null;
+    if (password) {
       data.passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      // A password chosen for someone else is one-time; resetting your own isn't.
-      data.mustChangePassword = target.id !== req.user.id;
+      data.mustChangePassword = true;
     }
+    // A lost authenticator: another System Admin clears it, and the account
+    // sets a new one up at its next sign-in. (Not your own — that would let a
+    // stolen session remove the second step.)
+    const clearTwoStep = () => Object.assign(data, { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null });
+    if (resetTwoStep === true) {
+      if (req.user.role !== 'sysadmin' || target.role !== 'sysadmin') return res.status(403).json({ error: 'Only a System Admin can reset another System Admin’s two-step sign-in.' });
+      if (target.id === req.user.id) return res.status(400).json({ error: 'Ask another System Admin to reset your two-step sign-in.' });
+      clearTwoStep();
+    }
+    // Leaving the System Admin role drops their authenticator; if they're
+    // made one again, they set up a fresh one.
+    if (role !== undefined && role !== 'sysadmin' && target.role === 'sysadmin') clearTwoStep();
 
     // The worker link and (for supervisors) the crew are checked together
     // whenever the role, the link, or re-enabling could change them.
@@ -152,14 +180,37 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
     const changed = ['name', 'role', 'active', 'casualWorkerId', 'crewId'].filter((k) => k in data && data[k] !== target[k]);
     const details = { before: Object.fromEntries(changed.map((k) => [k, target[k]])), after: Object.fromEntries(changed.map((k) => [k, data[k]])) };
 
-    // A temporary password set for someone else is emailed to them.
+    // The new temporary password is emailed to them; only if that fails is
+    // it returned, once, to pass on another way.
     let mail = null;
-    if (data.mustChangePassword) {
+    if (password) {
       mail = await sendAccountEmail({ kind: 'reset', email: user.email, name: user.name, password });
       details.resetEmail = mail.sent ? 'sent' : `not sent: ${mail.error}`;
+      if (!mail.sent) details.temporaryPasswordShownToAdmin = true;
     }
     res.locals.audit = { details };
-    res.json({ user, ...(mail ? { emailed: mail.sent, emailError: mail.error || null } : {}) });
+
+    // Anything touching who is a System Admin, or a System Admin's access,
+    // is told to all of them.
+    const who = `${user.name || user.email} <${user.email}>`;
+    const by = req.user.name || req.user.email;
+    const adminEvents = [];
+    if ('role' in data && data.role !== target.role && (data.role === 'sysadmin' || target.role === 'sysadmin')) {
+      adminEvents.push(data.role === 'sysadmin' ? `${by} made ${who} a System Admin.` : `${by} removed System Admin from ${who} (now ${ROLE_LABELS[data.role]}).`);
+    }
+    if (target.role === 'sysadmin' && 'active' in data && data.active !== target.active) {
+      adminEvents.push(`${by} ${data.active ? 're-enabled' : 'disabled'} System Admin ${who}.`);
+    }
+    if (target.role === 'sysadmin' && password) adminEvents.push(`${by} reset the password of System Admin ${who}.`);
+    if (resetTwoStep === true) adminEvents.push(`${by} reset the two-step sign-in of System Admin ${who}. They'll set up a new authenticator at their next sign-in.`);
+    if (adminEvents.length) {
+      await tellAdmins(req.user.subcontractorName, {
+        title: `System Admin change: ${user.name || user.email}`,
+        body: `${adminEvents.join('\n')}\n\nIf this wasn't expected, check Users and the audit log.`
+      });
+    }
+
+    res.json({ user, ...(mail ? { emailed: mail.sent, emailError: mail.error || null, ...(mail.sent ? {} : { temporaryPassword: password }) } : {}) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error('Failed to update user:', err);

@@ -12,6 +12,8 @@ const router = express.Router();
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PATTERN_RE = /^[DNO]{2,31}$/;
 const SCHEDULE_EDITORS = ['sysadmin', 'hr', 'admin_assistant'];
+// Who sets up crews and their cycles (and applies detected cycle changes).
+const CREW_MANAGERS = ['sysadmin', 'hr'];
 
 function dateOnly(dateStr) {
   return new Date(`${dateStr}T00:00:00.000Z`);
@@ -82,7 +84,7 @@ function validateRotation({ pattern, anchorDate, effectiveFrom }) {
   return null;
 }
 
-router.post('/crews', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.post('/crews', authenticate, requireRole(...CREW_MANAGERS), async (req, res) => {
   const { name, pattern = 'DDNNOO', anchorDate, effectiveFrom } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Crew name is required.' });
   const invalid = validateRotation({ pattern, anchorDate, effectiveFrom });
@@ -104,7 +106,7 @@ router.post('/crews', authenticate, requireRole('sysadmin'), async (req, res) =>
   }
 });
 
-router.patch('/crews/:id', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.patch('/crews/:id', authenticate, requireRole(...CREW_MANAGERS), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { name } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Crew name is required.' });
@@ -138,7 +140,7 @@ async function applyRotation({ crewId, pattern, anchorDate, effectiveFrom, note,
   return recomputeWorkers(await crewMemberIds(crewId, effectiveFrom, subcontractorName), effectiveFrom);
 }
 
-router.post('/crews/:id/rotations', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.post('/crews/:id/rotations', authenticate, requireRole(...CREW_MANAGERS), async (req, res) => {
   const crewId = parseInt(req.params.id, 10);
   const { pattern, anchorDate, effectiveFrom, note } = req.body || {};
   const invalid = validateRotation({ pattern, anchorDate, effectiveFrom });
@@ -157,7 +159,7 @@ router.post('/crews/:id/rotations', authenticate, requireRole('sysadmin'), async
 
 // ------------------------------------------------- cycle-change proposals
 
-router.get('/crews/proposals', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant'), async (req, res) => {
+router.get('/crews/proposals', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'auditor'), async (req, res) => {
   try {
     const proposals = await prisma.crewCycleProposal.findMany({
       where: { status: 'open', crew: { subcontractorName: req.user.subcontractorName } },
@@ -175,7 +177,7 @@ router.get('/crews/proposals', authenticate, requireRole('sysadmin', 'hr', 'admi
   }
 });
 
-router.post('/crews/proposals/:id/:action', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.post('/crews/proposals/:id/:action', authenticate, requireRole(...CREW_MANAGERS), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { action } = req.params;
   if (!['apply', 'dismiss'].includes(action)) return res.status(404).json({ error: 'Unknown action.' });
@@ -223,7 +225,7 @@ router.post('/crews/proposals/:id/:action', authenticate, requireRole('sysadmin'
 
 // -------------------------------------------------------------- workers
 
-router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'supervisor'), async (req, res) => {
+router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'), async (req, res) => {
   try {
     const { workers, resolver, crewsById } = await loadTenant(req.user.subcontractorName);
     const today = todayEat();
@@ -284,7 +286,7 @@ router.post('/workers/:id/schedule', authenticate, requireRole(...SCHEDULE_EDITO
 
 // ------------------------------------------------------- pattern review
 
-router.get('/pattern-review', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
+router.get('/pattern-review', authenticate, requireRole('sysadmin', 'hr', 'auditor'), async (req, res) => {
   try {
     const { workers, resolver, crewsById } = await loadTenant(req.user.subcontractorName);
     const today = todayEat();
@@ -328,7 +330,7 @@ router.post('/pattern-review/:workerId/:action', authenticate, requireRole('sysa
     }
 
     if (profile.suggestedType === 'rotation') {
-      return res.status(400).json({ error: 'This worker fits a rotation no crew is on yet — ask the System Admin to set up that crew first.' });
+      return res.status(400).json({ error: 'This worker fits a rotation no crew is on yet — set up that crew first in Schedules → Crews.' });
     }
     const effectiveFrom = DATE_RE.test(req.body?.effectiveFrom || '') ? req.body.effectiveFrom : todayEat();
     const recalculated = await setWorkerSchedule({
@@ -365,7 +367,7 @@ async function assertCanEditWorker(user, workerId) {
   return worker;
 }
 
-router.get('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor'), async (req, res) => {
+router.get('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor', 'auditor'), async (req, res) => {
   const from = DATE_RE.test(req.query.from || '') ? req.query.from : addDaysStr(todayEat(), -14);
   const to = DATE_RE.test(req.query.to || '') ? req.query.to : addDaysStr(todayEat(), 30);
   try {

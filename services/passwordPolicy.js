@@ -31,4 +31,31 @@ function passwordProblem(password) {
   return `Password needs: ${unmet.map((r) => r.label.replace(/^(At least|An?) /, (m) => m.toLowerCase())).join(', ')}.`;
 }
 
-module.exports = { RULES, MAX_BYTES, unmetRules, passwordProblem };
+// A one-time password for a new account or a reset — generated, so no
+// admin ever chooses (or needs to know) someone else's password. Ten
+// characters, always meeting the rules above, without look-alikes (0/O,
+// 1/l/I) or symbols that are awkward to type, since people read it from an
+// email.
+const crypto = require('crypto');
+const TEMP_SETS = {
+  upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
+  lower: 'abcdefghijkmnpqrstuvwxyz',
+  digit: '23456789',
+  special: '!@#$%&*?'
+};
+const TEMP_LENGTH = 10;
+
+function generateTemporaryPassword() {
+  const pick = (set) => set[crypto.randomInt(set.length)];
+  const all = Object.values(TEMP_SETS).join('');
+  // One of each kind, the rest from everything, then shuffled.
+  const chars = [pick(TEMP_SETS.upper), pick(TEMP_SETS.lower), pick(TEMP_SETS.digit), pick(TEMP_SETS.special)];
+  while (chars.length < TEMP_LENGTH) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
+module.exports = { RULES, MAX_BYTES, unmetRules, passwordProblem, generateTemporaryPassword, TEMP_LENGTH };

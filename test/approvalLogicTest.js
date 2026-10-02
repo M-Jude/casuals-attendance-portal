@@ -84,7 +84,7 @@ function stored(overrides = {}) {
   check('HR can approve once escalated', canApprove({ role: 'hr' }, { ...unit, escalatedAt: new Date() }, after).ok);
   check('Admin Assistant can approve once escalated', canApprove({ role: 'admin_assistant' }, { ...unit, escalatedAt: new Date() }, after).ok);
   check('Finance can never approve', !canApprove({ role: 'finance' }, { ...unit, escalatedAt: new Date() }, after).ok);
-  check('System admin can always approve', canApprove({ role: 'sysadmin' }, unit, due.getTime() - HOUR).ok);
+  check('System admin cannot approve (separation of duties), and is told why', !canApprove({ role: 'sysadmin' }, unit, due.getTime() + HOUR).ok && /System Admins/.test(canApprove({ role: 'sysadmin' }, unit, due.getTime() + HOUR).reason));
   const month = { kind: 'hr-month', status: 'pending', dueAt: new Date('2026-09-30T21:00:00Z') };
   check('HR approves the permanent-Day month once it has ended', canApprove({ role: 'hr' }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
   check('HR cannot approve the month before it ends', !canApprove({ role: 'hr' }, month, Date.parse('2026-09-30T06:00:00Z')).ok);

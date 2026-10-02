@@ -49,6 +49,9 @@ rule('POST', '/api/auth/login', {
 });
 rule('POST', '/api/auth/logout', { category: 'auth', action: 'auth.logout', summary: () => 'Signed out' });
 rule('POST', '/api/auth/change-password', { category: 'auth', action: 'auth.password-change', summary: () => 'Changed their password' });
+rule('POST', '/api/auth/mfa/setup', { category: 'auth', action: 'auth.mfa-setup', summary: () => 'Started setting up two-step sign-in' });
+rule('POST', '/api/auth/mfa/enable', { category: 'auth', action: 'auth.mfa-enable', summary: ({ ok }) => (ok ? 'Set up two-step sign-in' : 'Two-step setup: wrong code') });
+rule('POST', '/api/auth/mfa/verify', { category: 'auth', action: 'auth.mfa-verify', summary: ({ ok }) => (ok ? 'Signed in (password + authenticator code)' : 'Wrong authenticator code') });
 
 // ------------------------------------------------------------------ accounts
 
@@ -65,7 +68,8 @@ rule('PATCH', '/api/users/:id', {
     if (body.active === false) bits.push('disabled');
     if (body.active === true) bits.push('re-enabled');
     if (body.role !== undefined) bits.push(`role set to ${ROLE_LABELS[body.role] || body.role}`);
-    if (body.password !== undefined) bits.push('password reset');
+    if (body.resetPassword === true) bits.push('new temporary password sent');
+    if (body.resetTwoStep === true) bits.push('two-step sign-in reset');
     if (typeof body.name === 'string') bits.push(`name set to "${body.name}"`);
     if (body.casualWorkerId !== undefined) bits.push(body.casualWorkerId ? `linked to ${await nameOfWorker(body.casualWorkerId)}` : 'worker link removed');
     return `Updated account ${who}${bits.length ? `: ${bits.join(', ')}` : ''}`;

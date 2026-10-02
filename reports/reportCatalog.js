@@ -34,7 +34,7 @@ const MAX_REGISTER_DAYS = 31;
 
 const PERIODS = ['day', 'week', 'month', 'range', 'all'];
 const MANAGERS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
-const EVERYONE = [...MANAGERS, 'finance'];
+const EVERYONE = [...MANAGERS, 'finance', 'auditor'];
 
 const REPORT_TYPES = [
   {
@@ -74,7 +74,7 @@ const REPORT_TYPES = [
     description: 'Each crew shift by shift: scheduled, worked, late, no-shows, hours and approval state.'
   },
   {
-    id: 'approvals', name: 'Approval status', roles: MANAGERS, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
+    id: 'approvals', name: 'Approval status', roles: [...MANAGERS, 'auditor'], periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
     description: 'Every approval batch in the period: who approved it and when, what is pending and what was escalated.'
   },
   {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import PasswordChecklist from './PasswordChecklist';
 import { isStrongPassword } from './passwordPolicy';
 
@@ -107,6 +107,12 @@ function LoginFrame({ title, sub, children }) {
         .portal-login button:hover:not(:disabled) {
           background: var(--accent-hover);
         }
+        .portal-code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 24px !important; letter-spacing: 0.4em; text-align: center; }
+        .portal-qr { display: block; margin: 4px auto 12px; border-radius: 8px; background: #fff; padding: 6px; }
+        .portal-secret { font-size: 13px; color: var(--muted); text-align: center; margin: 0 0 16px; }
+        .portal-secret code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 14px; color: var(--text); word-break: break-all; }
+        .portal-steps { font-size: 14px; color: var(--text); margin: 0 0 10px; padding-left: 20px; line-height: 1.5; }
+        .portal-login__help { font-size: 12.5px; color: var(--muted); text-align: center; margin: 14px 0 0; }
         .portal-login button.portal-login__secondary {
           background: none;
           color: var(--muted);
@@ -140,11 +146,30 @@ function LoginFrame({ title, sub, children }) {
   );
 }
 
+// POSTs to a sign-in endpoint (no session yet) and returns { status, body }.
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
 export default function PortalLogin({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // System Admins: after the password, the authenticator step.
+  //   { mode: 'verify' | 'setup', mfaToken }
+  const [twoStep, setTwoStep] = useState(null);
+
+  if (twoStep) {
+    return (
+      <TwoStepScreen
+        {...twoStep}
+        onSignedIn={onLogin}
+        onRestart={(message) => { setTwoStep(null); setPassword(''); setSubmitting(false); setError(message || ''); }}
+      />
+    );
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -174,6 +199,10 @@ export default function PortalLogin({ onLogin }) {
       }
 
       const data = await res.json();
+      if (data.mfaRequired || data.mfaSetupRequired) {
+        setTwoStep({ mode: data.mfaRequired ? 'verify' : 'setup', mfaToken: data.mfaToken });
+        return;
+      }
       onLogin(data.token);
     } catch {
       setError('Could not reach the server. Check your connection and try again.');
@@ -211,6 +240,106 @@ export default function PortalLogin({ onLogin }) {
         <button type="submit" disabled={submitting}>
           {submitting ? 'Signing in…' : 'Sign in'}
         </button>
+      </form>
+    </LoginFrame>
+  );
+}
+
+// The second step for System Admins: the 6-digit code from their
+// authenticator app — or, the first time (and after a reset), scanning a QR
+// code into the app and confirming it with a code.
+function TwoStepScreen({ mode, mfaToken, onSignedIn, onRestart }) {
+  const [code, setCode] = useState('');
+  const [setup, setSetup] = useState(null); // { qrDataUrl, secret }
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (mode !== 'setup' || started.current) return;
+    started.current = true;
+    postJson('/api/auth/mfa/setup', { mfaToken }).then(({ status, body }) => {
+      if (status === 401) onRestart(body.error);
+      else if (status !== 200) setError(body.error || 'Could not start the setup. Sign in again.');
+      else setSetup(body);
+    }).catch(() => setError('Could not reach the server. Check your connection and try again.'));
+  }, [mode, mfaToken, onRestart]);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (submitting) return;
+    setError('');
+    setSubmitting(true);
+    try {
+      const { status, body } = await postJson(mode === 'setup' ? '/api/auth/mfa/enable' : '/api/auth/mfa/verify', { mfaToken, code });
+      if (status === 200 && body.token) { onSignedIn(body.token); return; }
+      if (status === 401) { onRestart(body.error); return; }
+      setError(body.error || 'Something went wrong. Try again.');
+      setCode('');
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.');
+    }
+    setSubmitting(false);
+  }
+
+  const codeField = (
+    <label className="portal-field">
+      <span>6-digit code</span>
+      <input
+        value={code}
+        onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        pattern="\d{6}"
+        maxLength={6}
+        autoFocus
+        required
+        className="portal-code"
+      />
+    </label>
+  );
+
+  if (mode === 'setup') {
+    return (
+      <LoginFrame
+        title="Set up two-step sign-in"
+        sub="System Admins sign in with their password and a code from an authenticator app on their phone (Google Authenticator, Microsoft Authenticator or similar)."
+      >
+        {!setup && !error && <p className="portal-login__sub">Preparing…</p>}
+        {setup && (
+          <form onSubmit={submit}>
+            <ol className="portal-steps">
+              <li>Open your authenticator app and add an account by scanning this code:</li>
+            </ol>
+            <img className="portal-qr" src={setup.qrDataUrl} alt="QR code to add this account to your authenticator app" width={200} height={200} />
+            <p className="portal-secret">Can’t scan it? Enter this key instead:<br /><code>{setup.secret}</code></p>
+            <ol className="portal-steps" start={2}>
+              <li>Enter the 6-digit code the app now shows for “UCAA Casuals Portal”.</li>
+            </ol>
+            {codeField}
+            {error && <div className="portal-error" role="alert">{error}</div>}
+            <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Confirm and sign in'}</button>
+            <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
+          </form>
+        )}
+        {!setup && error && (
+          <>
+            <div className="portal-error" role="alert">{error}</div>
+            <button type="button" onClick={() => onRestart('')}>Back to sign in</button>
+          </>
+        )}
+      </LoginFrame>
+    );
+  }
+
+  return (
+    <LoginFrame title="Enter your code" sub="Open your authenticator app and enter the 6-digit code shown for “UCAA Casuals Portal”.">
+      <form onSubmit={submit}>
+        {codeField}
+        {error && <div className="portal-error" role="alert">{error}</div>}
+        <button type="submit" disabled={submitting || code.length !== 6}>{submitting ? 'Checking…' : 'Sign in'}</button>
+        <button type="button" className="portal-login__secondary" onClick={() => onRestart('')}>Cancel</button>
+        <p className="portal-login__help">Lost your phone? Ask another System Admin to reset your two-step sign-in.</p>
       </form>
     </LoginFrame>
   );

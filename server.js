@@ -7,7 +7,7 @@ const { syncAttendance } = require('./sync/attendanceSync');
 const { runApprovalJobs } = require('./sync/approvalJobs');
 const { runProfiling } = require('./sync/profilingJob');
 const { recomputeLookback } = require('./services/recompute');
-const { runLiveSync, withSyncLock, markFullSync } = require('./services/liveSync');
+const { runLiveSync, withSyncLock, markFullSync, markFullSyncFailed } = require('./services/liveSync');
 
 const app = express();
 
@@ -38,7 +38,8 @@ app.use('/api', require('./routes/shifts'));               // shift rules
 app.use('/api', require('./routes/schedules'));            // crews, rotations, worker schedules, exceptions, pattern review
 app.use('/api', require('./routes/approvals'));            // shift approvals
 app.use('/api', require('./routes/notifications'));        // in-app notifications
-app.use('/api', require('./routes/audit'));                // audit log (System Admin)
+app.use('/api', require('./routes/audit'));                // audit log (System Admin, Auditor)
+app.use('/api', require('./routes/system'));               // GET /system/status (System Admin, Auditor)
 
 // In production the built React app (`npm run build` → dist/) is served from
 // here too, so the portal and API share one origin. In development Vite
@@ -63,9 +64,14 @@ const EAT = { timezone: 'Africa/Kampala' };
 // Runs under the shared sync lock so it never overlaps a live sync.
 async function runSyncAndSummaries() {
   await withSyncLock(async () => {
-    await syncAttendance();
-    await recomputeLookback();
-    markFullSync();
+    try {
+      await syncAttendance();
+      await recomputeLookback();
+      markFullSync();
+    } catch (err) {
+      markFullSyncFailed(err);
+      throw err;
+    }
   });
   await runApprovalJobs();
 }
