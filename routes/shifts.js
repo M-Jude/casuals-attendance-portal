@@ -3,6 +3,7 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { recomputeLookback } = require('../services/recompute');
+const { withSyncLock } = require('../services/liveSync');
 
 const router = express.Router();
 
@@ -52,9 +53,10 @@ router.put('/shifts/:id', authenticate, requireRole('sysadmin', 'hr'), async (re
 
     // Rules changed — rebuild the recent window so it reflects them.
     // Approved rows stay as approved and are flagged for re-approval if the
-    // new rules change them.
-    await recomputeLookback();
-    res.json({ shift: updated });
+    // new rules change them. Waits for any BioStar sync in progress.
+    const recalculated = await withSyncLock(() => recomputeLookback());
+    res.locals.audit.details.recalculated = recalculated;
+    res.json({ shift: updated, recalculated });
   } catch (err) {
     console.error('Failed to update shift:', err);
     res.status(500).json({ error: 'Could not update the shift rules.' });

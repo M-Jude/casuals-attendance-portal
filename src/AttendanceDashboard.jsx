@@ -7,6 +7,7 @@ import StatusTags from './StatusTags';
 import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
 import { usePagination } from './Pagination';
+import { useBusy, useToast } from './toast';
 
 // The dashboard loads every record in the range (in chunks) so the overview
 // covers all of it; the table then pages through them on screen.
@@ -130,6 +131,8 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const toast = useToast();
+  const { guard, isBusy } = useBusy();
   const [selectedRow, setSelectedRow] = useState(null); // the summary row behind an open modal
   const [pdfBusy, setPdfBusy] = useState(false);
 
@@ -185,7 +188,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   // plus a recompute of the shift-aware summaries, then reloads the
   // currently selected date range so new punches show up without waiting
   // for the next scheduled sync.
-  async function handleRefresh() {
+  const handleRefresh = () => guard('sync', async () => {
     setSyncing(true);
     setError('');
 
@@ -199,33 +202,44 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         onLogout();
         return;
       }
+      if (res.status === 409) {
+        // Someone else's sync (or the hourly one) is already running.
+        toast.info('A BioStar sync is already running. Wait a minute for it to finish, then reload the page to see the new figures.');
+        return;
+      }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || 'Sync failed');
       }
 
       await loadSummaries();
+      toast.success('Synced with BioStar — attendance is up to date.');
     } catch (err) {
-      setError(err.message || 'Could not sync with BioStar. Try again.');
+      const message = err.message || 'Could not sync with BioStar. Try again.';
+      setError(message);
+      toast.error(message);
     } finally {
       setSyncing(false);
     }
-  }
+  });
 
-  async function handleExport() {
+  const handleExport = () => guard('csv', async () => {
     setError('');
     const params = new URLSearchParams({ from, to });
     try {
       await downloadAuthenticated(`/api/attendance/export?${params}`, token, `casuals-attendance_${from}_to_${to}.csv`);
+      toast.success('CSV downloaded.');
     } catch (err) {
-      setError(err.message || 'Could not export CSV. Try again.');
+      const message = err.message || 'Could not export CSV. Try again.';
+      setError(message);
+      toast.error(message);
     }
-  }
+  });
 
   // The PDF is built server-side over the whole date range (not just the 500
   // rows the table loads), but takes the on-screen filters/sort/group so the
   // report matches what's being looked at.
-  async function handleDownloadPdf() {
+  const handleDownloadPdf = () => guard('pdf', async () => {
     setError('');
     setPdfBusy(true);
     const params = new URLSearchParams({ from, to, sortBy, groupBy });
@@ -233,12 +247,15 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
     if (filterName.trim()) params.set('name', filterName.trim());
     try {
       await downloadAuthenticated(`/api/attendance/report.pdf?${params}`, token, `casuals-attendance-report_${from}_to_${to}.pdf`);
+      toast.success('PDF report downloaded.');
     } catch (err) {
-      setError(err.message || 'Could not generate the PDF report. Try again.');
+      const message = err.message || 'Could not generate the PDF report. Try again.';
+      setError(message);
+      toast.error(message);
     } finally {
       setPdfBusy(false);
     }
-  }
+  });
 
   // Shifts worked back to back are double shifts. A Day + that evening's
   // Night is one line, from the Day's clock-in to the Night's clock-out (its
@@ -397,7 +414,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
               {syncing ? 'Syncing…' : 'Sync now'}
             </button>
           )}
-          <button className="btn" onClick={handleExport}>Export CSV</button>
+          <button className="btn" onClick={handleExport} disabled={isBusy('csv')}>{isBusy('csv') ? 'Exporting…' : 'Export CSV'}</button>
           <button className="btn btn--primary" onClick={handleDownloadPdf} disabled={pdfBusy}>
             {pdfBusy ? 'Preparing…' : 'Download PDF'}
           </button>

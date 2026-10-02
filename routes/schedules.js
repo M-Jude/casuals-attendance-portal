@@ -135,7 +135,7 @@ async function applyRotation({ crewId, pattern, anchorDate, effectiveFrom, note,
     update: { pattern, anchorDate: dateOnly(anchorDate), note, createdById: userId },
     create: { crewId, pattern, anchorDate: dateOnly(anchorDate), effectiveFrom: dateOnly(effectiveFrom), note, createdById: userId }
   });
-  await recomputeWorkers(await crewMemberIds(crewId, effectiveFrom, subcontractorName), effectiveFrom);
+  return recomputeWorkers(await crewMemberIds(crewId, effectiveFrom, subcontractorName), effectiveFrom);
 }
 
 router.post('/crews/:id/rotations', authenticate, requireRole('sysadmin'), async (req, res) => {
@@ -147,8 +147,8 @@ router.post('/crews/:id/rotations', authenticate, requireRole('sysadmin'), async
   try {
     const crew = await prisma.crew.findFirst({ where: { id: crewId, subcontractorName: req.user.subcontractorName } });
     if (!crew) return res.status(404).json({ error: 'Crew not found.' });
-    await applyRotation({ crewId, pattern, anchorDate, effectiveFrom, note: note || null, userId: req.user.id, subcontractorName: req.user.subcontractorName });
-    res.json({ success: true });
+    const recalculated = await applyRotation({ crewId, pattern, anchorDate, effectiveFrom, note: note || null, userId: req.user.id, subcontractorName: req.user.subcontractorName });
+    res.json({ success: true, recalculated });
   } catch (err) {
     console.error('Failed to change crew rotation:', err);
     res.status(500).json({ error: 'Could not change the rotation.' });
@@ -182,26 +182,39 @@ router.post('/crews/proposals/:id/:action', authenticate, requireRole('sysadmin'
 
   try {
     const proposal = await prisma.crewCycleProposal.findFirst({
-      where: { id, status: 'open', crew: { subcontractorName: req.user.subcontractorName } }
+      where: { id, crew: { subcontractorName: req.user.subcontractorName } }
     });
-    if (!proposal) return res.status(404).json({ error: 'Proposal not found or already resolved.' });
+    if (!proposal) return res.status(404).json({ error: 'Proposal not found.' });
 
-    if (action === 'apply') {
-      await applyRotation({
-        crewId: proposal.crewId,
-        pattern: proposal.pattern,
-        anchorDate: dateStrOf(proposal.anchorDate),
-        effectiveFrom: dateStrOf(proposal.effectiveFrom),
-        note: `Applied detected cycle change #${proposal.id}`,
-        userId: req.user.id,
-        subcontractorName: req.user.subcontractorName
-      });
-    }
-    await prisma.crewCycleProposal.update({
-      where: { id },
+    // Resolve it in one conditional step so a double click (or two admins)
+    // can't apply it twice; the loser is told it's already been dealt with.
+    const claimed = await prisma.crewCycleProposal.updateMany({
+      where: { id, status: 'open' },
       data: { status: action === 'apply' ? 'applied' : 'dismissed', resolvedById: req.user.id, resolvedAt: new Date() }
     });
-    res.json({ success: true });
+    if (claimed.count === 0) {
+      return res.status(409).json({ error: `This cycle change has already been ${proposal.status === 'open' ? 'resolved' : proposal.status}.`, code: 'ALREADY_DONE' });
+    }
+
+    let recalculated = null;
+    if (action === 'apply') {
+      try {
+        recalculated = await applyRotation({
+          crewId: proposal.crewId,
+          pattern: proposal.pattern,
+          anchorDate: dateStrOf(proposal.anchorDate),
+          effectiveFrom: dateStrOf(proposal.effectiveFrom),
+          note: `Applied detected cycle change #${proposal.id}`,
+          userId: req.user.id,
+          subcontractorName: req.user.subcontractorName
+        });
+      } catch (err) {
+        // Put it back so it can be tried again.
+        await prisma.crewCycleProposal.update({ where: { id }, data: { status: 'open', resolvedById: null, resolvedAt: null } }).catch(() => {});
+        throw err;
+      }
+    }
+    res.json({ success: true, recalculated });
   } catch (err) {
     console.error('Failed to resolve proposal:', err);
     res.status(500).json({ error: 'Could not update the proposal.' });
@@ -256,11 +269,11 @@ router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assist
 router.post('/workers/:id/schedule', authenticate, requireRole(...SCHEDULE_EDITORS), async (req, res) => {
   const { type, crewId, effectiveFrom, note, supervisorAction } = req.body || {};
   try {
-    await setWorkerSchedule({
+    const recalculated = await setWorkerSchedule({
       workerId: parseInt(req.params.id, 10), type, crewId, effectiveFrom, note: note || null,
       userId: req.user.id, subcontractorName: req.user.subcontractorName, supervisorAction
     });
-    res.json({ success: true });
+    res.json({ success: true, recalculated });
   } catch (err) {
     // 409 + decision: the worker is a supervisor — the UI asks what happens to their account.
     if (err.status) return res.status(err.status).json({ error: err.message, decision: err.decision });
@@ -318,7 +331,7 @@ router.post('/pattern-review/:workerId/:action', authenticate, requireRole('sysa
       return res.status(400).json({ error: 'This worker fits a rotation no crew is on yet — ask the System Admin to set up that crew first.' });
     }
     const effectiveFrom = DATE_RE.test(req.body?.effectiveFrom || '') ? req.body.effectiveFrom : todayEat();
-    await setWorkerSchedule({
+    const recalculated = await setWorkerSchedule({
       workerId,
       type: profile.suggestedType,
       crewId: profile.suggestedCrewId,
@@ -328,7 +341,7 @@ router.post('/pattern-review/:workerId/:action', authenticate, requireRole('sysa
       subcontractorName: req.user.subcontractorName,
       supervisorAction: req.body?.supervisorAction
     });
-    res.json({ success: true });
+    res.json({ success: true, recalculated });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message, decision: err.decision });
     console.error('Failed to resolve pattern review:', err);
@@ -389,8 +402,8 @@ router.put('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'superv
       update: { shifts: value, note: note || null, createdById: req.user.id },
       create: { casualWorkerId: id, date: dateOnly(date), shifts: value, note: note || null, createdById: req.user.id }
     });
-    await recomputeWorkers([id], addDaysStr(date, -1), addDaysStr(date, 1));
-    res.json({ success: true });
+    const recalculated = await recomputeWorkers([id], addDaysStr(date, -1), addDaysStr(date, 1));
+    res.json({ success: true, recalculated });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error('Failed to save exception:', err);
@@ -401,16 +414,18 @@ router.put('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'superv
 router.delete('/exceptions/:id', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor'), async (req, res) => {
   try {
     const exception = await prisma.shiftException.findUnique({ where: { id: parseInt(req.params.id, 10) } });
-    if (!exception) return res.status(404).json({ error: 'Exception not found.' });
+    if (!exception) return res.status(404).json({ error: 'This exception has already been removed.', code: 'ALREADY_DONE' });
     const worker = await assertCanEditWorker(req.user, exception.casualWorkerId);
-    await prisma.shiftException.delete({ where: { id: exception.id } });
+    // deleteMany: a second, simultaneous delete finds nothing rather than erroring.
+    const removed = await prisma.shiftException.deleteMany({ where: { id: exception.id } });
+    if (removed.count === 0) return res.status(404).json({ error: 'This exception has already been removed.', code: 'ALREADY_DONE' });
     const date = dateStrOf(exception.date);
     res.locals.audit = {
       summary: `Removed the schedule exception for ${worker.name} (${worker.biostarUserId}) on ${date}`,
       details: { removed: { date, shifts: exception.shifts || 'off', note: exception.note } }
     };
-    await recomputeWorkers([exception.casualWorkerId], addDaysStr(date, -1), addDaysStr(date, 1));
-    res.json({ success: true });
+    const recalculated = await recomputeWorkers([exception.casualWorkerId], addDaysStr(date, -1), addDaysStr(date, 1));
+    res.json({ success: true, recalculated });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error('Failed to delete exception:', err);

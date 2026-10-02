@@ -32,7 +32,9 @@ async function setWorkerSchedule({ workerId, type, crewId, effectiveFrom, note, 
     create: { casualWorkerId: workerId, effectiveFrom: dateOnly(effectiveFrom), type, crewId: type === 'crew' ? Number(crewId) : null, note, createdById: userId }
   });
   if (afterSave) await afterSave();
-  await recomputeWorkers([workerId], effectiveFrom);
+  // Their records from the change onwards are worked out again against the
+  // new schedule; returns what changed.
+  return recomputeWorkers([workerId], effectiveFrom);
 }
 
 module.exports = { setWorkerSchedule, SCHEDULE_TYPES };

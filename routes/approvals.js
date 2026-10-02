@@ -170,11 +170,22 @@ router.post('/approvals/:id/approve', authenticate, requireRole(...APPROVERS), a
   try {
     const unit = await loadVisibleUnit(req.user, parseInt(req.params.id, 10));
     if (!unit) return res.status(404).json({ error: 'Not found.' });
+    if (unit.status === 'approved') return res.status(409).json({ error: 'This has already been approved.', code: 'ALREADY_DONE' });
     const permission = canApprove(req.user, unit, Date.now());
     if (!permission.ok) return res.status(403).json({ error: permission.reason });
 
     const now = new Date();
     await prisma.$transaction(async (tx) => {
+      // Claim the batch first: only one request can move it to approved, and
+      // the row stays locked until this transaction ends, so a double click or
+      // two approvers at once can't apply the pending changes twice or
+      // overwrite who approved it.
+      const claimed = await tx.approvalUnit.updateMany({
+        where: { id: unit.id, status: { not: 'approved' } },
+        data: { status: 'approved', approvedAt: now, approvedById: req.user.id, comment, reopenedAt: null }
+      });
+      if (claimed.count === 0) throw Object.assign(new Error('This has already been approved.'), { status: 409 });
+
       const rows = await tx.dailyAttendanceSummary.findMany({ where: { approvalKey: unit.key } });
       for (const row of rows) {
         const pending = row.changedAfterApproval ? row.pendingValues : null;
@@ -198,14 +209,11 @@ router.post('/approvals/:id/approve', authenticate, requireRole(...APPROVERS), a
         if (typeof rowComments[row.id] === 'string') data.supervisorComment = rowComments[row.id].slice(0, MAX_COMMENT) || null;
         await tx.dailyAttendanceSummary.update({ where: { id: row.id }, data });
       }
-      await tx.approvalUnit.update({
-        where: { id: unit.id },
-        data: { status: 'approved', approvedAt: now, approvedById: req.user.id, comment, reopenedAt: null }
-      });
     });
 
     res.json({ success: true });
   } catch (err) {
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: 'ALREADY_DONE' });
     console.error('Approval failed:', err);
     res.status(500).json({ error: 'Could not approve.' });
   }

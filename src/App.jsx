@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import PortalLogin, { ChangePasswordScreen } from './PortalLogin';
 import Shell from './Shell';
 import { makeApi } from './api';
+import { useToast } from './toast';
 
 const TOKEN_KEY = 'casuals_portal_token';
 
 export default function App() {
+  const toast = useToast();
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -45,7 +47,10 @@ export default function App() {
       <ChangePasswordScreen
         api={api}
         user={user}
-        onChanged={() => setUser({ ...user, mustChangePassword: false })}
+        onChanged={() => {
+          setUser({ ...user, mustChangePassword: false });
+          toast.success('Your password has been changed. Welcome to the portal.');
+        }}
         onLogout={handleLogout}
       />
     );
