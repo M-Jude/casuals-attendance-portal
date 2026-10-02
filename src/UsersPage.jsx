@@ -4,6 +4,7 @@ import { usePagination } from './Pagination';
 import { useSort } from './useSort';
 import PasswordChecklist from './PasswordChecklist';
 import { isStrongPassword } from './passwordPolicy';
+import { useBusy, useToast } from './toast';
 
 // Roles that never have a worker record (the Director role, when added).
 const NO_WORKER_LINK = ['director'];
@@ -40,26 +41,35 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
   const [moveFrom, setMoveFrom] = useState(todayEat());
   const [confirmMove, setConfirmMove] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const toast = useToast();
+  const { guard, busy } = useBusy();
   const isSupervisor = account.role === 'supervisor';
   const linkedWorker = account.casualWorkerId ? workersById.get(account.casualWorkerId) : null;
+  const who = account.name || account.email;
 
-  async function patch(body) {
-    setError('');
-    setNotice('');
-    try {
-      const result = await api(`/api/users/${account.id}`, { method: 'PATCH', body });
-      if (result.emailed === true) setNotice(`Password reset. ${account.email} has been emailed the temporary password.`);
-      else if (result.emailed === false) setNotice(`Password reset, but the email couldn’t be sent (${result.emailError}). Give them the temporary password yourself.`);
-      else if (body.password) setNotice('Password reset.');
-      setEditing(false);
-      setPassword('');
-      setLinkTo(null);
-      setConfirmMove(false);
-      onSaved();
-    } catch (err) {
-      setError(err.message);
-    }
+  // One change at a time per account; on success the panel closes, the
+  // form clears and the list reloads; on failure the panel stays open with
+  // what was entered, so it can be corrected and tried again.
+  function patch(body, successMessage) {
+    return guard(async () => {
+      setError('');
+      try {
+        const result = await api(`/api/users/${account.id}`, { method: 'PATCH', body });
+        if (result.emailed === false) {
+          toast.warn(`Password reset for ${who}, but the email couldn’t be sent (${result.emailError}). Give them the temporary password yourself.`);
+        } else {
+          toast.success(result.emailed ? `Password reset. ${account.email} has been emailed the temporary password.` : successMessage);
+        }
+        setEditing(false);
+        setPassword('');
+        setLinkTo(null);
+        setConfirmMove(false);
+        onSaved();
+      } catch (err) {
+        setError(err.message);
+        toast.error(`Couldn’t update ${who}: ${err.message}`);
+      }
+    });
   }
 
   const targetCrew = crews.find((c) => String(c.id) === String(moveTo));
@@ -77,8 +87,7 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
       <td>{ROLE_LABEL[account.role] || account.role}</td>
       <td>{account.crew?.name || '—'}</td>
       <td>
-        {canEdit && !editing && <button className="btn btn--small" onClick={() => { setNotice(''); setEditing(true); }}>Manage</button>}
-        {!editing && notice && <div className="small muted" style={{ marginTop: 6 }} role="status">{notice}</div>}
+        {canEdit && !editing && <button className="btn btn--small" onClick={() => setEditing(true)}>Manage</button>}
         {editing && (
           <div className="manage">
             {isSupervisor && (
@@ -104,7 +113,7 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
                       {account.crew ? ` ${account.crew.name} will need a new supervisor.` : ''} To take them off supervising instead, change their schedule in Schedules → Workers.
                     </p>
                     <div className="decision__actions">
-                      <button className="btn btn--primary btn--small" onClick={() => patch({ moveToCrewId: Number(moveTo), effectiveFrom: moveFrom })}>Yes, move them</button>
+                      <button className="btn btn--primary btn--small" disabled={busy} onClick={() => patch({ moveToCrewId: Number(moveTo), effectiveFrom: moveFrom }, `${who} moved to ${targetCrew?.name} from ${formatDateLabel(moveFrom)}.`)}>{busy ? 'Moving…' : 'Yes, move them'}</button>
                       <button className="btn btn--link small" onClick={() => setConfirmMove(false)}>Cancel</button>
                     </div>
                   </div>
@@ -118,14 +127,14 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
                 {account.worker ? (
                   <div className="form-row">
                     <span className="small">{workerLabel(account.worker)}</span>
-                    <button className="btn btn--small" onClick={() => patch({ casualWorkerId: null })}>Unlink</button>
+                    <button className="btn btn--small" disabled={busy} onClick={() => patch({ casualWorkerId: null }, `${who} is no longer linked to a worker record.`)}>Unlink</button>
                   </div>
                 ) : (
                   <div className="form-row">
                     <label className="field field--grow">
                       <WorkerPicker id={`link-${account.id}`} workers={freeWorkers} value={linkTo} onPick={setLinkTo} placeholder="Search a name or ID…" />
                     </label>
-                    <button className="btn btn--small" disabled={!linkTo} onClick={() => patch({ casualWorkerId: linkTo.id })}>Link</button>
+                    <button className="btn btn--small" disabled={!linkTo || busy} onClick={() => patch({ casualWorkerId: linkTo.id }, `${who} linked to ${linkTo.name}.`)}>Link</button>
                   </div>
                 )}
               </div>
@@ -135,13 +144,13 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
               <div className="manage__label">Password</div>
               <div className="form-row">
                 <input className="input" type="password" placeholder="Temporary password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" aria-describedby={`reset-password-rules-${account.id}`} />
-                <button className="btn btn--small" disabled={!isStrongPassword(password)} onClick={() => patch({ password })}>Reset password</button>
+                <button className="btn btn--small" disabled={!isStrongPassword(password) || busy} onClick={() => patch({ password }, `Password reset for ${who}.`)}>{busy ? 'Resetting…' : 'Reset password'}</button>
               </div>
               {password && <PasswordChecklist password={password} id={`reset-password-rules-${account.id}`} />}
               <p className="small muted" style={{ margin: '6px 0 0' }}>It’s emailed to {account.email}, and is temporary: they’ll have to choose their own at their next sign-in.</p>
             </div>
             <div className="form-row" style={{ marginTop: 10 }}>
-              <button className={`btn btn--small ${account.active ? 'btn--danger' : ''}`} onClick={() => patch({ active: !account.active })}>
+              <button className={`btn btn--small ${account.active ? 'btn--danger' : ''}`} disabled={busy} onClick={() => patch({ active: !account.active }, account.active ? `${who}’s account has been disabled.` : `${who}’s account has been re-enabled.`)}>
                 {account.active ? 'Disable account' : 'Re-enable account'}
               </button>
               <button className="btn btn--link small" onClick={() => { setEditing(false); setConfirmMove(false); setError(''); }}>Close</button>
@@ -162,7 +171,8 @@ export default function UsersPage({ api, user }) {
   const [form, setForm] = useState({ name: '', email: '', role: '', password: '' });
   const [worker, setWorker] = useState(null);
   const [error, setError] = useState('');
-  const [saved, setSaved] = useState('');
+  const toast = useToast();
+  const { guard, busy: creating } = useBusy();
   const { sorted: sortedUsers, th, sortKey } = useSort(users, {
     name: (u) => u.name,
     email: (u) => u.email,
@@ -202,22 +212,26 @@ export default function UsersPage({ api, user }) {
     if (w) setForm((f) => ({ ...f, name: f.name || w.name }));
   }
 
-  async function create(e) {
+  function create(e) {
     e.preventDefault();
-    setError('');
-    setSaved('');
-    if (isSupervisor && !worker) { setError('Choose the supervisor’s worker record — every supervisor is a worker.'); return; }
-    try {
-      const result = await api('/api/users', { method: 'POST', body: { ...form, casualWorkerId: canLink && worker ? worker.id : null } });
-      setSaved(result.emailed
-        ? `Account created. ${form.email} has been emailed the sign-in link and temporary password — they’ll choose their own when they first sign in.`
-        : `Account created, but the welcome email couldn’t be sent (${result.emailError}). Give ${form.email} the portal link and temporary password yourself.`);
-      setForm((f) => ({ ...f, name: '', email: '', password: '' }));
-      setWorker(null);
-      load();
-    } catch (err) {
-      setError(err.message);
-    }
+    return guard(async () => {
+      setError('');
+      if (isSupervisor && !worker) { setError('Choose the supervisor’s worker record — every supervisor is a worker.'); return; }
+      try {
+        const result = await api('/api/users', { method: 'POST', body: { ...form, casualWorkerId: canLink && worker ? worker.id : null } });
+        if (result.emailed) {
+          toast.success(`Account created for ${form.email}. They’ve been emailed the sign-in link and temporary password.`);
+        } else {
+          toast.warn(`Account created for ${form.email}, but the welcome email couldn’t be sent (${result.emailError}). Give them the portal link and temporary password yourself.`);
+        }
+        setForm((f) => ({ ...f, name: '', email: '', password: '' }));
+        setWorker(null);
+        load();
+      } catch (err) {
+        setError(err.message);
+        toast.error(`Couldn’t create the account: ${err.message}`);
+      }
+    });
   }
 
   return (
@@ -262,12 +276,11 @@ export default function UsersPage({ api, user }) {
             <label className="field">Name<input value={form.name} onChange={set('name')} required placeholder={worker ? worker.name : ''} /></label>
             <label className="field">Email<input type="email" value={form.email} onChange={set('email')} required /></label>
             <label className="field">Temporary password<input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" aria-describedby="new-account-password-rules" required /></label>
-            <button className="btn btn--primary" disabled={!isStrongPassword(form.password) || (isSupervisor && (!worker || !leadsCrew))}>Create</button>
+            <button className="btn btn--primary" disabled={creating || !isStrongPassword(form.password) || (isSupervisor && (!worker || !leadsCrew))}>{creating ? 'Creating…' : 'Create'}</button>
           </div>
           {form.password && <PasswordChecklist password={form.password} id="new-account-password-rules" />}
         </form>
         {error && <div className="error">{error}</div>}
-        {saved && <div className="success">{saved}</div>}
       </div>
 
       <table className="table">

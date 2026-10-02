@@ -1047,6 +1047,40 @@ body.no-scroll { overflow: hidden; }
   .report-table thead { display: table-header-group; }
 }
 
+/* Pop-up action messages (toast.jsx). Bottom-right; above the tab bar on phones. */
+.toasts {
+  position: fixed; right: 20px; bottom: 20px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+  max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
+}
+.toast {
+  pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 12px 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg);
+  font-size: 14px; line-height: 1.45; animation: toast-in 160ms ease-out;
+}
+.toast__icon {
+  flex: 0 0 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 700; color: #fff;
+}
+.toast--success .toast__icon { background: var(--accent); }
+.toast--info .toast__icon { background: var(--muted); }
+.toast--warn { border-color: var(--warn-line); background: var(--warn-bg); }
+.toast--warn .toast__icon { background: var(--warn); }
+.toast--error { border-color: var(--critical-line); background: var(--critical-bg); }
+.toast--error .toast__icon { background: var(--critical); }
+.toast__msg { flex: 1; padding-top: 1px; }
+.toast__close {
+  flex: 0 0 auto; border: none; background: none; color: var(--muted); cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 0 4px;
+}
+.toast__close:hover { color: var(--text); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+@media (max-width: 600px) {
+  .toasts { left: 16px; right: 16px; bottom: calc(76px + env(safe-area-inset-bottom)); max-width: none; align-items: stretch; }
+}
+
 /* Password strength checklist (PasswordChecklist.jsx). */
 .pw-checklist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; line-height: 1.7; }
 .pw-checklist__item { color: var(--muted); }

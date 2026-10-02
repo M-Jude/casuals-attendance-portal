@@ -182,25 +182,37 @@ router.post('/crews/proposals/:id/:action', authenticate, requireRole('sysadmin'
 
   try {
     const proposal = await prisma.crewCycleProposal.findFirst({
-      where: { id, status: 'open', crew: { subcontractorName: req.user.subcontractorName } }
+      where: { id, crew: { subcontractorName: req.user.subcontractorName } }
     });
-    if (!proposal) return res.status(404).json({ error: 'Proposal not found or already resolved.' });
+    if (!proposal) return res.status(404).json({ error: 'Proposal not found.' });
 
-    if (action === 'apply') {
-      await applyRotation({
-        crewId: proposal.crewId,
-        pattern: proposal.pattern,
-        anchorDate: dateStrOf(proposal.anchorDate),
-        effectiveFrom: dateStrOf(proposal.effectiveFrom),
-        note: `Applied detected cycle change #${proposal.id}`,
-        userId: req.user.id,
-        subcontractorName: req.user.subcontractorName
-      });
-    }
-    await prisma.crewCycleProposal.update({
-      where: { id },
+    // Resolve it in one conditional step so a double click (or two admins)
+    // can't apply it twice; the loser is told it's already been dealt with.
+    const claimed = await prisma.crewCycleProposal.updateMany({
+      where: { id, status: 'open' },
       data: { status: action === 'apply' ? 'applied' : 'dismissed', resolvedById: req.user.id, resolvedAt: new Date() }
     });
+    if (claimed.count === 0) {
+      return res.status(409).json({ error: `This cycle change has already been ${proposal.status === 'open' ? 'resolved' : proposal.status}.`, code: 'ALREADY_DONE' });
+    }
+
+    if (action === 'apply') {
+      try {
+        await applyRotation({
+          crewId: proposal.crewId,
+          pattern: proposal.pattern,
+          anchorDate: dateStrOf(proposal.anchorDate),
+          effectiveFrom: dateStrOf(proposal.effectiveFrom),
+          note: `Applied detected cycle change #${proposal.id}`,
+          userId: req.user.id,
+          subcontractorName: req.user.subcontractorName
+        });
+      } catch (err) {
+        // Put it back so it can be tried again.
+        await prisma.crewCycleProposal.update({ where: { id }, data: { status: 'open', resolvedById: null, resolvedAt: null } }).catch(() => {});
+        throw err;
+      }
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('Failed to resolve proposal:', err);
@@ -401,9 +413,11 @@ router.put('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'superv
 router.delete('/exceptions/:id', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor'), async (req, res) => {
   try {
     const exception = await prisma.shiftException.findUnique({ where: { id: parseInt(req.params.id, 10) } });
-    if (!exception) return res.status(404).json({ error: 'Exception not found.' });
+    if (!exception) return res.status(404).json({ error: 'This exception has already been removed.', code: 'ALREADY_DONE' });
     const worker = await assertCanEditWorker(req.user, exception.casualWorkerId);
-    await prisma.shiftException.delete({ where: { id: exception.id } });
+    // deleteMany: a second, simultaneous delete finds nothing rather than erroring.
+    const removed = await prisma.shiftException.deleteMany({ where: { id: exception.id } });
+    if (removed.count === 0) return res.status(404).json({ error: 'This exception has already been removed.', code: 'ALREADY_DONE' });
     const date = dateStrOf(exception.date);
     res.locals.audit = {
       summary: `Removed the schedule exception for ${worker.name} (${worker.biostarUserId}) on ${date}`,

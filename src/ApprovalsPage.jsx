@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { TAG_LABEL, statusTags, isGuessed, GUESSED_TITLE } from './shiftStatus';
 import StatusTags from './StatusTags';
 import { useSort } from './useSort';
@@ -7,6 +7,7 @@ import { useSort } from './useSort';
 const STATUS_ORDER_KEY = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 };
 import { formatDateLabel, formatDateTime, formatTime } from './api';
 import { usePagination } from './Pagination';
+import { isAlreadyDone, useToast } from './toast';
 
 function unitState(u) {
   if (u.status === 'approved') return { label: 'Approved', cls: 'chip--ok' };
@@ -65,6 +66,8 @@ function PendingChange({ row }) {
 }
 
 function UnitDetail({ api, id, onBack, onApproved }) {
+  const toast = useToast();
+  const approving = useRef(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [comment, setComment] = useState('');
@@ -95,13 +98,25 @@ function UnitDetail({ api, id, onBack, onApproved }) {
   }, [api, id]);
 
   async function approve() {
+    if (approving.current) return; // a second click while the first is still going
+    approving.current = true;
     setBusy(true);
     setError('');
+    const label = data?.unit?.label || 'this batch';
     try {
       await api(`/api/approvals/${id}/approve`, { method: 'POST', body: { comment, rowComments } });
+      toast.success(`Approved: ${label}.`);
       onApproved();
     } catch (err) {
+      if (isAlreadyDone(err)) {
+        // Someone (or an earlier click) got there first — show the current state.
+        toast.info(`${label} has already been approved.`);
+        onApproved();
+        return;
+      }
       setError(err.message);
+      toast.error(`Couldn’t approve ${label}: ${err.message}`);
+      approving.current = false;
       setBusy(false);
     }
   }

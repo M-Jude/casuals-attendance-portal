@@ -5,6 +5,7 @@ import { ROLE_LABEL, formatDateLabel, todayEat } from './api';
 import { downloadAuthenticated } from './downloadFile';
 import { usePagination } from './Pagination';
 import { SortHeading, sortItems } from './useSort';
+import { useToast } from './toast';
 
 const PERIOD_LABEL = { day: 'Day', week: 'Week', month: 'Month', range: 'Date range', all: 'All time' };
 
@@ -254,6 +255,7 @@ export default function ReportsPage({ api, token, user }) {
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const toast = useToast();
   // Hidden columns per report type, remembered in this browser.
   const [hiddenByType, setHiddenByType] = useState(() => {
     try { return JSON.parse(localStorage.getItem('reportHiddenColumns') || '{}'); } catch { return {}; }
@@ -339,6 +341,7 @@ export default function ReportsPage({ api, token, user }) {
       setReport(r);
     } catch (err) {
       setError(err.message);
+      toast.error(`Couldn’t load the report: ${err.message}`);
       setReport(null);
     } finally {
       setBusy('');
@@ -352,8 +355,10 @@ export default function ReportsPage({ api, token, user }) {
     setError('');
     try {
       await downloadAuthenticated(`/api/reports/${typeId}?${params(format)}`, token, `report.${format}`);
+      toast.success(`${format === 'xlsx' ? 'Excel' : format.toUpperCase()} report downloaded.`);
     } catch (err) {
       setError(err.message || 'Download failed.');
+      toast.error(err.message || 'Download failed.');
     } finally {
       setBusy('');
     }

@@ -70,6 +70,9 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
     res.status(201).json({ user, emailed: mail.sent, emailError: mail.error || null });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
+    // Two identical requests at once (a double click): the second hits the
+    // unique email rather than the check above.
+    if (err.code === 'P2002') return res.status(409).json({ error: 'An account with that email already exists.' });
     console.error('Failed to create user:', err);
     res.status(500).json({ error: 'Could not create the account.' });
   }
