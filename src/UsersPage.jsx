@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ROLE_LABEL, todayEat, formatDateLabel } from './api';
 import { usePagination } from './Pagination';
 import { useSort } from './useSort';
+import PasswordChecklist from './PasswordChecklist';
+import { isStrongPassword } from './passwordPolicy';
 
 // Roles that never have a worker record (the Director role, when added).
 const NO_WORKER_LINK = ['director'];
@@ -126,9 +128,10 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
             <div className="manage__block">
               <div className="manage__label">Password</div>
               <div className="form-row">
-                <input className="input" type="password" placeholder="Temporary password (8+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} />
-                <button className="btn btn--small" disabled={password.length < 8} onClick={() => patch({ password })}>Reset password</button>
+                <input className="input" type="password" placeholder="Temporary password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" aria-describedby={`reset-password-rules-${account.id}`} />
+                <button className="btn btn--small" disabled={!isStrongPassword(password)} onClick={() => patch({ password })}>Reset password</button>
               </div>
+              {password && <PasswordChecklist password={password} id={`reset-password-rules-${account.id}`} />}
               <p className="small muted" style={{ margin: '6px 0 0' }}>Temporary: they’ll have to choose their own at their next sign-in.</p>
             </div>
             <div className="form-row" style={{ marginTop: 10 }}>
@@ -250,9 +253,10 @@ export default function UsersPage({ api, user }) {
           <div className="form-row" style={{ marginTop: 14 }}>
             <label className="field">Name<input value={form.name} onChange={set('name')} required placeholder={worker ? worker.name : ''} /></label>
             <label className="field">Email<input type="email" value={form.email} onChange={set('email')} required /></label>
-            <label className="field">Temporary password<input type="password" value={form.password} onChange={set('password')} minLength={8} required /></label>
-            <button className="btn btn--primary" disabled={isSupervisor && (!worker || !leadsCrew)}>Create</button>
+            <label className="field">Temporary password<input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" aria-describedby="new-account-password-rules" required /></label>
+            <button className="btn btn--primary" disabled={!isStrongPassword(form.password) || (isSupervisor && (!worker || !leadsCrew))}>Create</button>
           </div>
+          {form.password && <PasswordChecklist password={form.password} id="new-account-password-rules" />}
         </form>
         {error && <div className="error">{error}</div>}
         {saved && <div className="success">{saved}</div>}

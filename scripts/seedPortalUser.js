@@ -14,6 +14,7 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../prismaClient');
 const { ROLES } = require('../middleware/requireRole');
+const { passwordProblem } = require('../services/passwordPolicy');
 
 const SALT_ROUNDS = 12;
 
@@ -25,6 +26,8 @@ function fail(message) {
 async function createUser(email, password, role, name, subcontractorName = 'Subcontractor A') {
   if (!ROLES.includes(role)) fail(`Unknown role "${role}". Use one of: ${ROLES.join(', ')}`);
   if (role === 'supervisor') fail('Create supervisors in the portal (Users), where you pick their worker record.');
+  const weak = passwordProblem(password);
+  if (weak) fail(weak);
   const normalised = email.trim().toLowerCase();
 
   const existing = await prisma.portalUser.findUnique({ where: { email: normalised } });
@@ -53,6 +56,8 @@ async function setRole(email, role) {
 }
 
 async function resetPassword(email, newPassword) {
+  const weak = passwordProblem(newPassword);
+  if (weak) fail(weak);
   const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) fail(`No portal user found with email "${email}".`);
   await prisma.portalUser.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS), mustChangePassword: true } });

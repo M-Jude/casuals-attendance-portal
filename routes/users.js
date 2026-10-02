@@ -7,9 +7,10 @@ const { resolveWorkerLink } = require('../services/accountLink');
 const { setWorkerSchedule } = require('../services/workerSchedule');
 const { todayEat } = require('../services/recompute');
 
+const { passwordProblem } = require('../services/passwordPolicy');
+
 const router = express.Router();
 const SALT_ROUNDS = 12;
-const MIN_PASSWORD_LENGTH = 8;
 
 const PUBLIC_FIELDS = {
   id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true,
@@ -37,9 +38,8 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
   const { email, name, role, password, casualWorkerId } = req.body || {};
   if (typeof email !== 'string' || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'A valid email is required.' });
   if (!(CAN_CREATE[req.user.role] || []).includes(role)) return res.status(403).json({ error: 'You cannot create an account with that role.' });
-  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
-  }
+  const weak = passwordProblem(password);
+  if (weak) return res.status(400).json({ error: weak });
 
   try {
     const { worker, crewId } = await resolveWorkerLink({ casualWorkerId, role, subcontractorName: req.user.subcontractorName });
@@ -113,9 +113,8 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
     if (role !== undefined) data.role = role;
     if (typeof active === 'boolean') data.active = active;
     if (password !== undefined) {
-      if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
-        return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
-      }
+      const weak = passwordProblem(password);
+      if (weak) return res.status(400).json({ error: weak });
       data.passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
       // A password chosen for someone else is one-time; resetting your own isn't.
       data.mustChangePassword = target.id !== req.user.id;

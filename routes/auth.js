@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
+const { passwordProblem } = require('../services/passwordPolicy');
 
 const router = express.Router();
 
@@ -74,16 +75,14 @@ router.post('/login', async (req, res) => {
 // password is a 400, not a 401: the session itself is fine, and the
 // frontend signs out on any 401.
 const SALT_ROUNDS = 12;
-const MIN_PASSWORD_LENGTH = 8;
 
 router.post('/change-password', authenticate, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (typeof currentPassword !== 'string' || !currentPassword || typeof newPassword !== 'string') {
     return res.status(400).json({ error: 'Your current password and a new password are required.' });
   }
-  if (newPassword.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).json({ error: `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
-  }
+  const weak = passwordProblem(newPassword);
+  if (weak) return res.status(400).json({ error: weak });
   if (newPassword === currentPassword) {
     return res.status(400).json({ error: 'The new password must be different from the current one.' });
   }
