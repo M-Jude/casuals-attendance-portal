@@ -13,7 +13,7 @@
     "seed:shifts": "node scripts/seedShifts.js",
     "bootstrap:schedules": "node scripts/bootstrapSchedules.js",
     "recompute": "node scripts/recompute.js",
-    "test": "node test/shiftEngineTest.js && node test/patternProfilerTest.js && node test/approvalLogicTest.js && node test/scheduleResolverTest.js && node test/reportsTest.js && node test/auditTest.js && node test/liveViewTest.js && node test/mockSyncTest.js && node test/cookieExtractionTest.js"
+    "test": "node test/shiftEngineTest.js && node test/patternProfilerTest.js && node test/approvalLogicTest.js && node test/scheduleResolverTest.js && node test/reportsTest.js && node test/auditTest.js && node test/passwordChangeTest.js &&node test/liveViewTest.js && node test/mockSyncTest.js && node test/cookieExtractionTest.js"
   },
   "dependencies": {
     "@prisma/client": "^5.18.0",

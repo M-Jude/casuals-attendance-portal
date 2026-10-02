@@ -69,6 +69,49 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// The account holder sets their own password — required before anything
+// else when someone else chose it (mustChangePassword). A wrong current
+// password is a 400, not a 401: the session itself is fine, and the
+// frontend signs out on any 401.
+const SALT_ROUNDS = 12;
+const MIN_PASSWORD_LENGTH = 8;
+
+router.post('/change-password', authenticate, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (typeof currentPassword !== 'string' || !currentPassword || typeof newPassword !== 'string') {
+    return res.status(400).json({ error: 'Your current password and a new password are required.' });
+  }
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+  }
+  if (newPassword === currentPassword) {
+    return res.status(400).json({ error: 'The new password must be different from the current one.' });
+  }
+
+  const limitKey = `${req.ip}|change-password|${req.user.id}`;
+  if (isRateLimited(limitKey)) {
+    return res.status(429).json({ error: 'Too many failed attempts. Try again in 15 minutes.' });
+  }
+
+  try {
+    const user = await prisma.portalUser.findUnique({ where: { id: req.user.id } });
+    if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+      recordFailure(limitKey);
+      return res.status(400).json({ error: 'Your current password is incorrect.' });
+    }
+    failedAttempts.delete(limitKey);
+
+    await prisma.portalUser.update({
+      where: { id: user.id },
+      data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS), mustChangePassword: false }
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Password change failed:', err);
+    res.status(500).json({ error: 'Could not change your password. Try again shortly.' });
+  }
+});
+
 // Signing out is client-side (the token is dropped); this only records it
 // in the audit log.
 router.post('/logout', authenticate, (req, res) => res.status(204).end());

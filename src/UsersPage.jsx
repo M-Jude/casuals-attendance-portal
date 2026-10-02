@@ -60,7 +60,8 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
   return (
     <tr>
       <td>
-        <div style={{ fontWeight: 600 }}>{account.name || '—'}{!account.active && <span className="chip chip--critical" style={{ marginLeft: 8 }}>disabled</span>}</div>
+        <div style={{ fontWeight: 600 }}>{account.name || '—'}{!account.active && <span className="chip chip--critical" style={{ marginLeft: 8 }}>disabled</span>}
+          {account.active && account.mustChangePassword && <span className="chip chip--warn" style={{ marginLeft: 8 }} title="Still on the password they were given — they'll choose their own at their next sign-in.">temporary password</span>}</div>
         {account.worker
           ? <div className="small muted">Worker {account.worker.biostarUserId}{account.worker.status !== 'active' && ' · inactive in BioStar'}</div>
           : <div className="small muted">No worker record</div>}
@@ -125,9 +126,10 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
             <div className="manage__block">
               <div className="manage__label">Password</div>
               <div className="form-row">
-                <input className="input" type="password" placeholder="New password (8+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} />
+                <input className="input" type="password" placeholder="Temporary password (8+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} />
                 <button className="btn btn--small" disabled={password.length < 8} onClick={() => patch({ password })}>Reset password</button>
               </div>
+              <p className="small muted" style={{ margin: '6px 0 0' }}>Temporary: they’ll have to choose their own at their next sign-in.</p>
             </div>
             <div className="form-row" style={{ marginTop: 10 }}>
               <button className={`btn btn--small ${account.active ? 'btn--danger' : ''}`} onClick={() => patch({ active: !account.active })}>
@@ -198,7 +200,7 @@ export default function UsersPage({ api, user }) {
     if (isSupervisor && !worker) { setError('Choose the supervisor’s worker record — every supervisor is a worker.'); return; }
     try {
       await api('/api/users', { method: 'POST', body: { ...form, casualWorkerId: canLink && worker ? worker.id : null } });
-      setSaved(`Account created for ${form.email}. Share the password with them securely.`);
+      setSaved(`Account created for ${form.email}. Share the temporary password with them securely — they’ll have to choose their own when they first sign in.`);
       setForm((f) => ({ ...f, name: '', email: '', password: '' }));
       setWorker(null);
       load();
@@ -248,7 +250,7 @@ export default function UsersPage({ api, user }) {
           <div className="form-row" style={{ marginTop: 14 }}>
             <label className="field">Name<input value={form.name} onChange={set('name')} required placeholder={worker ? worker.name : ''} /></label>
             <label className="field">Email<input type="email" value={form.email} onChange={set('email')} required /></label>
-            <label className="field">Initial password<input type="password" value={form.password} onChange={set('password')} minLength={8} required /></label>
+            <label className="field">Temporary password<input type="password" value={form.password} onChange={set('password')} minLength={8} required /></label>
             <button className="btn btn--primary" disabled={isSupervisor && (!worker || !leadsCrew)}>Create</button>
           </div>
         </form>

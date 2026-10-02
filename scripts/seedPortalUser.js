@@ -31,14 +31,16 @@ async function createUser(email, password, role, name, subcontractorName = 'Subc
   if (existing) fail(`A portal user with email "${normalised}" already exists. Use set-role or reset-password instead.`);
 
   const user = await prisma.portalUser.create({
-    data: { email: normalised, name: name || '', role, passwordHash: await bcrypt.hash(password, SALT_ROUNDS), subcontractorName }
+    // Typed on a command line (and so in shell history): one-time, changed at first sign-in.
+    data: { email: normalised, name: name || '', role, passwordHash: await bcrypt.hash(password, SALT_ROUNDS), mustChangePassword: true, subcontractorName }
   });
 
   console.log(`Created portal user:
   id: ${user.id}
   email: ${user.email}
   role: ${user.role}
-  subcontractor: ${user.subcontractorName}`);
+  subcontractor: ${user.subcontractorName}
+The password is one-time: they'll be asked to choose a new one when they first sign in.`);
 }
 
 async function setRole(email, role) {
@@ -53,8 +55,8 @@ async function setRole(email, role) {
 async function resetPassword(email, newPassword) {
   const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) fail(`No portal user found with email "${email}".`);
-  await prisma.portalUser.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS) } });
-  console.log(`Password reset for ${user.email}.`);
+  await prisma.portalUser.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS), mustChangePassword: true } });
+  console.log(`Password reset for ${user.email}. They'll be asked to choose a new one when they sign in.`);
 }
 
 async function main() {
