@@ -337,6 +337,7 @@ for it.
 | Admin Assistant | everything | schedules and exceptions, approves escalated shifts |
 | Finance | approved records only | read-only, exports/PDF |
 | Shift Supervisor | their crew's records | approves their crew's shifts, records exceptions for their crew |
+| Director (Ark Group) | the **Overview** (month at a glance, with cost estimates once pay rates are set), all attendance live (approved or not), the Live page, every approval batch and its history, reports | read-only. Gets a **weekly attendance digest** every Monday 07:00 EAT (in the portal and by email; preview with `npm run digest`, send now with `npm run digest -- --send`). Created by the System Admin only; never linked to a worker record |
 | Auditor (internal UCAA audit) | everything: all records, raw punches, every approval batch, schedules and their history, accounts, the full audit log (System Admin included) | read-only: views, reports and exports. Created by the System Admin only; never linked to a worker record; gets no notifications |
 
 The Auditor's read-only status is enforced in `middleware/authenticate.js`

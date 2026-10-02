@@ -17,8 +17,13 @@
 //                   (enforced for every route in authenticate). Only the
 //                   System Admin creates auditor accounts, so the people
 //                   being audited don't control the auditors' access.
+//   director        Ark Group's director: the month overview (with cost
+//                   estimates), all attendance live (approved or not), the
+//                   Live page, every approval batch and its history, and
+//                   reports; a weekly attendance digest by email. Read-only,
+//                   like the auditor. Created by the System Admin only.
 
-const ROLES = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor'];
+const ROLES = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor', 'director'];
 
 const ROLE_LABELS = {
   sysadmin: 'System Admin',
@@ -26,11 +31,12 @@ const ROLE_LABELS = {
   admin_assistant: 'Admin Assistant',
   finance: 'Finance',
   supervisor: 'Shift Supervisor',
-  auditor: 'Auditor'
+  auditor: 'Auditor',
+  director: 'Director'
 };
 
 // Roles that can look but never change anything.
-const READ_ONLY_ROLES = ['auditor'];
+const READ_ONLY_ROLES = ['auditor', 'director'];
 
 // Which roles each role may create accounts for.
 const CAN_CREATE = {
