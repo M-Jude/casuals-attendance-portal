@@ -27,6 +27,12 @@ check('nothing granted database-wide (no GRANT … ON `db`.*)', !sql.some((x) =>
 check('any database-wide privileges are cleared first (they would override the audit-log limits)',
   plan[0].optional && plan[0].sql === "REVOKE ALL PRIVILEGES ON `casuals_portal`.* FROM 'casuals_app'@'localhost'"
   && plan[1].sql === "REVOKE GRANT OPTION ON `casuals_portal`.* FROM 'casuals_app'@'localhost'");
+// MySQL on Windows stores table names in lowercase — the live server did.
+const lower = planGrants({ database: 'casuals_portal', tables: ['auditlog', 'portaluser', '_prisma_migrations'], user: 'casuals_app', host: 'localhost' }).map((p) => p.sql);
+check('lowercase table names (Windows MySQL): audit log still read + add only',
+  lower.includes("GRANT SELECT, INSERT ON `casuals_portal`.`auditlog` TO 'casuals_app'@'localhost'")
+  && lower.includes("REVOKE UPDATE, DELETE ON `casuals_portal`.`auditlog` FROM 'casuals_app'@'localhost'")
+  && !lower.some((x) => /^GRANT .*(UPDATE|DELETE).*`auditlog`/.test(x)));
 check('names are quoted safely', planGrants({ database: 'd', tables: ['a`b'], user: "o'x", host: 'h' }).find((p) => p.sql.startsWith('GRANT')).sql === "GRANT SELECT, INSERT, UPDATE, DELETE ON `d`.`a``b` TO 'o\\'x'@'h'");
 
 let failed = 0;

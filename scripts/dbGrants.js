@@ -45,10 +45,13 @@ function planGrants({ database, tables, user, host }) {
     { sql: `REVOKE ALL PRIVILEGES ON ${q(database)}.* FROM ${grantee}`, optional: true },
     { sql: `REVOKE GRANT OPTION ON ${q(database)}.* FROM ${grantee}`, optional: true }
   ];
+  // Table names compared without case: MySQL on Windows (the default
+  // lower_case_table_names=1) stores AuditLog as `auditlog`.
+  const named = (list, table) => list.some((t) => t.toLowerCase() === table.toLowerCase());
   for (const table of tables) {
-    if (SKIP.includes(table)) continue;
+    if (named(SKIP, table)) continue;
     const target = `${q(database)}.${q(table)}`;
-    if (APPEND_ONLY.includes(table)) {
+    if (named(APPEND_ONLY, table)) {
       statements.push({ sql: `GRANT SELECT, INSERT ON ${target} TO ${grantee}` });
       // In case it was ever granted more; "no such grant" is fine.
       statements.push({ sql: `REVOKE UPDATE, DELETE ON ${target} FROM ${grantee}`, optional: true });
