@@ -32,7 +32,7 @@ function auditWhere(user, q) {
 }
 
 // The audit trail, newest first — System Admin only.
-router.get('/audit', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.get('/audit', authenticate, requireRole('sysadmin', 'auditor'), async (req, res) => {
   const size = Math.min(parseInt(req.query.size, 10) || 50, MAX_PAGE_SIZE);
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const where = auditWhere(req.user, req.query);
@@ -56,7 +56,7 @@ function csvCell(v) {
 
 // The filtered trail as CSV, stamped with who downloaded it (this download
 // is itself logged, with the same reference).
-router.get('/audit/export', authenticate, requireRole('sysadmin'), async (req, res) => {
+router.get('/audit/export', authenticate, requireRole('sysadmin', 'auditor'), async (req, res) => {
   try {
     const where = auditWhere(req.user, req.query);
     const entries = await prisma.auditLog.findMany({ where, orderBy: { id: 'desc' }, take: MAX_EXPORT_ROWS + 1 });

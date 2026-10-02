@@ -11,16 +11,26 @@
 //   finance         approved records only (read-only)
 //   supervisor      their own crew's records; approves their crew's shifts;
 //                   records exceptions for their crew's workers
+//   auditor         internal UCAA audit: sees everything — all records,
+//                   raw punches, approvals, schedules and their history,
+//                   accounts, the full audit log — and changes nothing
+//                   (enforced for every route in authenticate). Only the
+//                   System Admin creates auditor accounts, so the people
+//                   being audited don't control the auditors' access.
 
-const ROLES = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor'];
+const ROLES = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor'];
 
 const ROLE_LABELS = {
   sysadmin: 'System Admin',
   hr: 'HR',
   admin_assistant: 'Admin Assistant',
   finance: 'Finance',
-  supervisor: 'Shift Supervisor'
+  supervisor: 'Shift Supervisor',
+  auditor: 'Auditor'
 };
+
+// Roles that can look but never change anything.
+const READ_ONLY_ROLES = ['auditor'];
 
 // Which roles each role may create accounts for.
 const CAN_CREATE = {
@@ -45,4 +55,4 @@ function summaryVisibility(user) {
   return where;
 }
 
-module.exports = { requireRole, summaryVisibility, ROLES, ROLE_LABELS, CAN_CREATE };
+module.exports = { requireRole, summaryVisibility, ROLES, ROLE_LABELS, CAN_CREATE, READ_ONLY_ROLES };

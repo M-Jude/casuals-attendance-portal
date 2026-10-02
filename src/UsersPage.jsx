@@ -7,8 +7,9 @@ import { isStrongPassword } from './passwordPolicy';
 import { useBusy, useToast } from './toast';
 import { recalcNotice, recalcResult } from './confirm';
 
-// Roles that never have a worker record (the Director role, when added).
-const NO_WORKER_LINK = ['director'];
+// Roles that never have a worker record: UCAA auditors (and the Director
+// role, when added) aren't casual workers.
+const NO_WORKER_LINK = ['director', 'auditor'];
 
 const workerLabel = (w) => `${w.name} (${w.biostarUserId})`;
 
@@ -246,12 +247,16 @@ export default function UsersPage({ api, user }) {
           <p className="page__hint">
             {user.role === 'hr'
               ? 'Create accounts for shift supervisors, Finance and the Admin Assistant. A supervisor is one of the workers and leads the crew they rotate with.'
-              : 'All portal accounts. As System Admin you can create any role, including HR.'}
+              : user.role === 'auditor'
+                ? 'All portal accounts: their roles, crews, whether they’re enabled, and who is still on a temporary password. Read-only.'
+                : 'All portal accounts. As System Admin you can create any role, including HR and Auditor.'}
             {' '}Accounts linked to a worker record also get a “My attendance” page.
           </p>
         </div>
       </div>
 
+      {canCreate.length === 0 && error && <div className="error">{error}</div>}
+      {canCreate.length > 0 && (
       <div className="panel">
         <h3 className="panel__title">New account</h3>
         <form onSubmit={create}>
@@ -286,6 +291,7 @@ export default function UsersPage({ api, user }) {
         </form>
         {error && <div className="error">{error}</div>}
       </div>
+      )}
 
       <table className="table">
         <thead>

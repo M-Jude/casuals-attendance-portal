@@ -124,6 +124,7 @@ function isEscalationDue(unit, now) {
 //   sysadmin   — always (super user)
 function canApprove(user, unit, now) {
   if (unit.status === 'approved') return { ok: false, reason: 'Already approved.' };
+  if (user.role === 'auditor') return { ok: false, reason: 'Auditors can view approvals but not approve them.' };
   if (user.role === 'sysadmin') return { ok: true };
   const due = now >= new Date(unit.dueAt).getTime();
   if (unit.kind === 'crew-shift') {

@@ -8,6 +8,7 @@ import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
 import { usePagination } from './Pagination';
 import { useBusy, useToast } from './toast';
+import { isReadOnly } from './api';
 
 // The dashboard loads every record in the range (in chunks) so the overview
 // covers all of it; the table then pages through them on screen.
@@ -409,7 +410,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
           <p className="page__hint">Every shift in the period, worked out from the BioStar punches. Select a row to see its badges.</p>
         </div>
         <div className="dash__actions">
-          {user.role !== 'finance' && (
+          {user.role !== 'finance' && !isReadOnly(user) && (
             <button className="btn" onClick={handleRefresh} disabled={syncing} title="Pull the latest punches from BioStar">
               {syncing ? 'Syncing…' : 'Sync now'}
             </button>

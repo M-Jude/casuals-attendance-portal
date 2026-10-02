@@ -273,6 +273,14 @@ job only covers the recent lookback window.
 | Admin Assistant | everything | schedules and exceptions, approves escalated shifts |
 | Finance | approved records only | read-only, exports/PDF |
 | Shift Supervisor | their crew's records | approves their crew's shifts, records exceptions for their crew |
+| Auditor (internal UCAA audit) | everything: all records, raw punches, every approval batch, schedules and their history, accounts, the full audit log (System Admin included) | read-only: views, reports and exports. Created by the System Admin only; never linked to a worker record; gets no notifications |
+
+The Auditor's read-only status is enforced in `middleware/authenticate.js`
+for every request, not just by leaving the role off each route: apart from
+signing out, changing their own password and logging a print, any request
+from an auditor that isn't a read is refused (403 `READ_ONLY`).
+`test/auditorRoleTest.js` also checks that no route that changes data
+names the auditor.
 
 - Each crew's Day or Night shift on a date is one approval batch
   (`ApprovalUnit` kind `crew-shift`). It becomes approvable when the shift

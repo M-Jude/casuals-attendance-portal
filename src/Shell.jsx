@@ -9,27 +9,29 @@ import MyAttendancePage from './MyAttendancePage';
 import AuditLogsPage from './AuditLogsPage';
 import LivePage from './LivePage';
 import NotificationsBell from './NotificationsBell';
-import { ROLE_LABEL } from './api';
+import { ROLE_LABEL, isReadOnly } from './api';
 import Icon from './icons';
 import ErrorBoundary from './ErrorBoundary';
 import useCardTables from './useCardTables';
 import { useInstallPrompt, useOnline } from './pwa';
 
-const ALL = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor'];
+const ALL = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor'];
 
 // What each role sees in the navigation. The API enforces the same rules —
-// this only hides what someone can't use.
+// this only hides what someone can't use. The Auditor sees every page but
+// changes nothing (the pages hide their editing controls for read-only
+// roles, and the API refuses any change from them).
 const NAV = [
   { page: 'attendance', label: 'Attendance', icon: 'attendance', section: 'Workspace', roles: ALL },
-  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant'] },
+  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor'] },
   // Only for accounts linked to a worker record (never the Director role).
   { page: 'mine', label: 'My attendance', short: 'My shifts', icon: 'me', section: 'Workspace', roles: ALL, needsWorker: true },
-  { page: 'approvals', label: 'Approvals', icon: 'approvals', section: 'Workspace', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor'] },
+  { page: 'approvals', label: 'Approvals', icon: 'approvals', section: 'Workspace', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'] },
   { page: 'reports', label: 'Reports', icon: 'reports', section: 'Workspace', roles: ALL },
-  { page: 'schedules', label: 'Schedules', icon: 'schedules', section: 'Setup', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor'] },
+  { page: 'schedules', label: 'Schedules', icon: 'schedules', section: 'Setup', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'] },
   { page: 'rules', label: 'Shift rules', icon: 'rules', section: 'Setup', roles: ALL },
-  { page: 'users', label: 'Users', icon: 'users', section: 'Setup', roles: ['sysadmin', 'hr'] },
-  { page: 'audit', label: 'Audit logs', icon: 'audit', section: 'Setup', roles: ['sysadmin'] }
+  { page: 'users', label: 'Users', icon: 'users', section: 'Setup', roles: ['sysadmin', 'hr', 'auditor'] },
+  { page: 'audit', label: 'Audit logs', icon: 'audit', section: 'Setup', roles: ['sysadmin', 'auditor'] }
 ];
 
 // On phones the first few pages sit in a bottom tab bar, like a native app;
@@ -158,7 +160,7 @@ export default function Shell({ token, user, api, onLogout }) {
           <div className="avatar" aria-hidden="true">{initials}</div>
           <div className="side__user-text">
             <div className="side__user-name" title={displayName}>{displayName}</div>
-            <div className="side__user-role">{ROLE_LABEL[user.role]}{user.crewName ? ` · ${user.crewName}` : ''}</div>
+            <div className="side__user-role">{ROLE_LABEL[user.role]}{isReadOnly(user) ? ' · read-only' : ''}{user.crewName ? ` · ${user.crewName}` : ''}</div>
           </div>
           <button className="icon-btn" onClick={signOut} title="Sign out" aria-label="Sign out"><Icon name="logout" /></button>
         </div>
@@ -219,7 +221,7 @@ export default function Shell({ token, user, api, onLogout }) {
               <div className="avatar avatar--lg" aria-hidden="true">{initials}</div>
               <div className="side__user-text">
                 <div className="sheet__user-name">{displayName}</div>
-                <div className="sheet__user-role">{ROLE_LABEL[user.role]}{user.crewName ? ` · ${user.crewName}` : ''}</div>
+                <div className="sheet__user-role">{ROLE_LABEL[user.role]}{isReadOnly(user) ? ' · read-only' : ''}{user.crewName ? ` · ${user.crewName}` : ''}</div>
               </div>
             </div>
 

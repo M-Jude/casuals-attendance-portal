@@ -36,8 +36,15 @@ export const ROLE_LABEL = {
   hr: 'HR',
   admin_assistant: 'Admin Assistant',
   finance: 'Finance',
-  supervisor: 'Shift Supervisor'
+  supervisor: 'Shift Supervisor',
+  auditor: 'Auditor'
 };
+
+// Roles that can see but never change anything (the API refuses their
+// changes too). Pages hide their editing controls for them.
+export function isReadOnly(user) {
+  return user?.role === 'auditor';
+}
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 

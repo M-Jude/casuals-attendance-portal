@@ -157,7 +157,7 @@ router.post('/crews/:id/rotations', authenticate, requireRole('sysadmin'), async
 
 // ------------------------------------------------- cycle-change proposals
 
-router.get('/crews/proposals', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant'), async (req, res) => {
+router.get('/crews/proposals', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'auditor'), async (req, res) => {
   try {
     const proposals = await prisma.crewCycleProposal.findMany({
       where: { status: 'open', crew: { subcontractorName: req.user.subcontractorName } },
@@ -223,7 +223,7 @@ router.post('/crews/proposals/:id/:action', authenticate, requireRole('sysadmin'
 
 // -------------------------------------------------------------- workers
 
-router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'supervisor'), async (req, res) => {
+router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'), async (req, res) => {
   try {
     const { workers, resolver, crewsById } = await loadTenant(req.user.subcontractorName);
     const today = todayEat();
@@ -284,7 +284,7 @@ router.post('/workers/:id/schedule', authenticate, requireRole(...SCHEDULE_EDITO
 
 // ------------------------------------------------------- pattern review
 
-router.get('/pattern-review', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
+router.get('/pattern-review', authenticate, requireRole('sysadmin', 'hr', 'auditor'), async (req, res) => {
   try {
     const { workers, resolver, crewsById } = await loadTenant(req.user.subcontractorName);
     const today = todayEat();
@@ -365,7 +365,7 @@ async function assertCanEditWorker(user, workerId) {
   return worker;
 }
 
-router.get('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor'), async (req, res) => {
+router.get('/exceptions', authenticate, requireRole(...SCHEDULE_EDITORS, 'supervisor', 'auditor'), async (req, res) => {
   const from = DATE_RE.test(req.query.from || '') ? req.query.from : addDaysStr(todayEat(), -14);
   const to = DATE_RE.test(req.query.to || '') ? req.query.to : addDaysStr(todayEat(), 30);
   try {

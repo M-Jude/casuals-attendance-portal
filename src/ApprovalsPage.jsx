@@ -281,7 +281,8 @@ export default function ApprovalsPage({ api, user, onChanged }) {
     supervisor: `Approve each ${user.crewName || 'crew'} shift once it ends. Anything left unapproved for 48 hours is escalated to HR and the Admin Assistant.`,
     hr: 'Shifts escalated after 48 hours without supervisor approval, and the permanent-staff records you approve at month end.',
     admin_assistant: 'Shifts escalated after 48 hours without supervisor approval.',
-    sysadmin: 'All approval batches. As System Admin you can approve any of them.'
+    sysadmin: 'All approval batches. As System Admin you can approve any of them.',
+    auditor: 'Every approval batch for every crew: who approved it and when, their comments, escalations, and records changed after approval. Read-only.'
   }[user.role];
 
   return (

@@ -19,7 +19,7 @@ const PUBLIC_FIELDS = {
   worker: { select: { id: true, name: true, biostarUserId: true, status: true } }
 };
 
-router.get('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, res) => {
+router.get('/users', authenticate, requireRole('sysadmin', 'hr', 'auditor'), async (req, res) => {
   try {
     const users = await prisma.portalUser.findMany({
       where: { subcontractorName: req.user.subcontractorName },

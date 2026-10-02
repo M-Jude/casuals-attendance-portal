@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { formatDateLabel, formatDateTime, todayEat } from './api';
+import { formatDateLabel, formatDateTime, isReadOnly, todayEat } from './api';
 import { usePagination } from './Pagination';
 import SupervisorDecision from './SupervisorDecision';
 import { useSort } from './useSort';
@@ -81,7 +81,7 @@ function CrewsTab({ api, user }) {
   const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
   const isAdmin = user.role === 'sysadmin';
-  const canSeeProposals = ['sysadmin', 'hr', 'admin_assistant'].includes(user.role);
+  const canSeeProposals = ['sysadmin', 'hr', 'admin_assistant', 'auditor'].includes(user.role);
 
   const load = useCallback(() => {
     setError('');
@@ -434,7 +434,8 @@ function WorkersTab({ api, user }) {
 
 // ---------------------------------------------------------- pattern review
 
-function ReviewTab({ api }) {
+function ReviewTab({ api, user }) {
+  const readOnly = isReadOnly(user);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -502,9 +503,11 @@ function ReviewTab({ api }) {
         like a permanent Day worker. Accepting changes their schedule from the date below; dismissing hides this suggestion
         until the pattern changes again.
       </p>
-      <div className="form-row" style={{ marginBottom: 16 }}>
-        <label className="field">Apply accepted changes from<input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></label>
-      </div>
+      {!readOnly && (
+        <div className="form-row" style={{ marginBottom: 16 }}>
+          <label className="field">Apply accepted changes from<input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} /></label>
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
       {pending && (
         <SupervisorDecision
@@ -521,7 +524,7 @@ function ReviewTab({ api }) {
               {th('current', 'Currently')}
               {th('suggested', 'Punches fit')}
               {th('evidence', 'Evidence', { title: 'Sort by how clearly the punches fit (margin over the next best)' })}
-              <th />
+              {!readOnly && <th />}
             </tr>
           </thead>
           <tbody>
@@ -537,10 +540,12 @@ function ReviewTab({ api }) {
                   )}
                   <div>checked {formatDateTime(i.computedAt)}</div>
                 </td>
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  <button className="btn btn--primary btn--small" disabled={!i.canAccept || isBusy(i.workerId)} title={i.canAccept ? '' : 'No crew is on this rotation yet'} onClick={() => act(i, 'accept')}>Accept</button>{' '}
-                  <button className="btn btn--small" disabled={isBusy(i.workerId)} onClick={() => act(i, 'dismiss')}>Dismiss</button>
-                </td>
+                {!readOnly && (
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn btn--primary btn--small" disabled={!i.canAccept || isBusy(i.workerId)} title={i.canAccept ? '' : 'No crew is on this rotation yet'} onClick={() => act(i, 'accept')}>Accept</button>{' '}
+                    <button className="btn btn--small" disabled={isBusy(i.workerId)} onClick={() => act(i, 'dismiss')}>Dismiss</button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -566,7 +571,8 @@ function describeException(shifts) {
   return `${shifts[0]} only`;
 }
 
-function ExceptionsTab({ api }) {
+function ExceptionsTab({ api, user }) {
+  const readOnly = isReadOnly(user);
   const [exceptions, setExceptions] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [workerId, setWorkerId] = useState('');
@@ -655,6 +661,8 @@ function ExceptionsTab({ api }) {
 
   return (
     <>
+      {readOnly && error && <div className="error">{error}</div>}
+      {!readOnly && (
       <div className="panel">
         <h3 className="panel__title">Record an exception</h3>
         <p className="page__hint" style={{ marginBottom: 12 }}>
@@ -683,11 +691,12 @@ function ExceptionsTab({ api }) {
         </form>
         {error && <div className="error">{error}</div>}
       </div>
+      )}
 
       {exceptions.length === 0 ? <div className="empty">No exceptions in the last two weeks or the coming month.</div> : (
         <table className="table">
           <thead>
-            <tr>{th('date', 'Date')}{th('worker', 'Worker')}{th('works', 'Works')}<th>Note</th><th /></tr>
+            <tr>{th('date', 'Date')}{th('worker', 'Worker')}{th('works', 'Works')}<th>Note</th>{!readOnly && <th />}</tr>
           </thead>
           <tbody>
             {pageExceptions.map((ex) => (
@@ -696,7 +705,7 @@ function ExceptionsTab({ api }) {
                 <td>{ex.worker.name}<div className="small muted mono">{ex.worker.biostarUserId}</div></td>
                 <td>{describeException(ex.shifts)} <ShiftChip shifts={ex.shifts} /></td>
                 <td className="small muted">{ex.note || ''}</td>
-                <td><button className="btn btn--danger btn--small" disabled={isBusy(`remove-${ex.id}`)} onClick={() => remove(ex)}>{isBusy(`remove-${ex.id}`) ? 'Removing…' : 'Remove'}</button></td>
+                {!readOnly && <td><button className="btn btn--danger btn--small" disabled={isBusy(`remove-${ex.id}`)} onClick={() => remove(ex)}>{isBusy(`remove-${ex.id}`) ? 'Removing…' : 'Remove'}</button></td>}
               </tr>
             ))}
           </tbody>
@@ -711,7 +720,7 @@ export default function SchedulesPage({ api, user, tab, onTab }) {
   const tabs = [
     { id: 'crews', label: 'Crews' },
     { id: 'workers', label: 'Workers' },
-    ...(['sysadmin', 'hr'].includes(user.role) ? [{ id: 'review', label: 'Pattern review' }] : []),
+    ...(['sysadmin', 'hr', 'auditor'].includes(user.role) ? [{ id: 'review', label: 'Pattern review' }] : []),
     { id: 'exceptions', label: 'Exceptions' }
   ];
   const active = tabs.some((t) => t.id === tab) ? tab : 'crews';
@@ -735,7 +744,7 @@ export default function SchedulesPage({ api, user, tab, onTab }) {
       </div>
       {active === 'crews' && <CrewsTab api={api} user={user} />}
       {active === 'workers' && <WorkersTab api={api} user={user} />}
-      {active === 'review' && <ReviewTab api={api} />}
+      {active === 'review' && <ReviewTab api={api} user={user} />}
       {active === 'exceptions' && <ExceptionsTab api={api} user={user} />}
     </div>
   );
