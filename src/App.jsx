@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import PortalLogin from './PortalLogin';
+import PortalLogin, { ChangePasswordScreen } from './PortalLogin';
 import Shell from './Shell';
 import { makeApi } from './api';
 
@@ -37,6 +37,17 @@ export default function App() {
       <div className="shell">
         <div className="empty">{loadError || 'Loading…'}</div>
       </div>
+    );
+  }
+  // A password someone else chose must be replaced before anything else.
+  if (user.mustChangePassword) {
+    return (
+      <ChangePasswordScreen
+        api={api}
+        user={user}
+        onChanged={() => setUser({ ...user, mustChangePassword: false })}
+        onLogout={handleLogout}
+      />
     );
   }
   return <Shell token={token} user={user} api={api} onLogout={handleLogout} />;

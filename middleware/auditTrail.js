@@ -48,6 +48,7 @@ rule('POST', '/api/auth/login', {
   summary: ({ ok, body }) => (ok ? 'Signed in' : `Failed sign-in attempt for ${String(body.email || '').slice(0, 120) || '(no email)'}`)
 });
 rule('POST', '/api/auth/logout', { category: 'auth', action: 'auth.logout', summary: () => 'Signed out' });
+rule('POST', '/api/auth/change-password', { category: 'auth', action: 'auth.password-change', summary: () => 'Changed their password' });
 
 // ------------------------------------------------------------------ accounts
 

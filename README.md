@@ -144,6 +144,26 @@ portal and API share one URL (`http://<server>:<PORT>/`).
 Recommended: protect `master` (Settings → Branches) to require pull requests
 and the **Test & build** check, so only passing code is deployed.
 
+### Public access (Tailscale Funnel)
+
+To reach the portal from any network without opening an inbound port or
+owning a domain, `deploy/windows/setup-funnel.ps1` installs Tailscale as a
+Windows service and turns on Funnel, which serves the portal over HTTPS at
+`https://<machine-name>.<tailnet>.ts.net`.
+
+1. Create a free account at https://tailscale.com, then **Settings → Keys →
+   Generate auth key**.
+2. From an elevated PowerShell:
+   `.\deploy\windows\setup-funnel.ps1 -AuthKey <tskey-auth-...>`. If
+   Tailscale prints a link to enable Funnel for the tailnet, open it and
+   approve. The script prints the public URL when done.
+3. Set `APP_BASE_URL` in the app's `.env` to that URL (used in email links)
+   and restart the `CasualsPortal` service.
+
+Before exposing it, make sure `JWT_SECRET` is a fresh random value. Once
+everyone uses the public URL, `HOST=127.0.0.1` in `.env` stops the portal
+listening on the LAN at all (the tunnel connects locally).
+
 ## Verifying the setup
 
 1. `node test/liveBiostarCheck.js` — TA login and punch-log fetch against

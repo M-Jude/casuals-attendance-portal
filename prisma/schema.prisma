@@ -48,6 +48,9 @@ model PortalUser {
   id                Int           @id @default(autoincrement())
   email             String        @unique
   passwordHash      String
+  // Set when someone else chose the password (a new account, or an HR/admin
+  // reset): the account can do nothing but change it until it has.
+  mustChangePassword Boolean      @default(false)
   name              String        @default("")
   role              String        @default("hr")
   crewId            Int?

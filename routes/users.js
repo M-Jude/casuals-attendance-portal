@@ -12,7 +12,7 @@ const SALT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 8;
 
 const PUBLIC_FIELDS = {
-  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true,
+  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true,
   crew: { select: { id: true, name: true } },
   worker: { select: { id: true, name: true, biostarUserId: true, status: true } }
 };
@@ -57,6 +57,7 @@ router.post('/users', authenticate, requireRole('sysadmin', 'hr'), async (req, r
         crewId: role === 'supervisor' ? crewId : null,
         casualWorkerId: worker ? worker.id : null,
         passwordHash: await bcrypt.hash(password, SALT_ROUNDS),
+        mustChangePassword: true, // the creator chose it: one-time, changed at first sign-in
         subcontractorName: req.user.subcontractorName,
         createdById: req.user.id
       },
@@ -116,6 +117,8 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
         return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
       }
       data.passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+      // A password chosen for someone else is one-time; resetting your own isn't.
+      data.mustChangePassword = target.id !== req.user.id;
     }
 
     // The worker link and (for supervisors) the crew are checked together

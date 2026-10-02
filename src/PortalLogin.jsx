@@ -1,46 +1,8 @@
 import { useState } from 'react';
 
-export default function PortalLogin({ onLogin }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-
-      if (!res.ok) {
-        // 401 stays generic (don't reveal whether the email exists); other
-        // failures — rate limiting, validation, server errors — are real
-        // conditions worth telling the user about specifically, since
-        // "password incorrect" is actively misleading for those.
-        if (res.status === 401) {
-          setError('Email or password is incorrect.');
-        } else {
-          const body = await res.json().catch(() => ({}));
-          setError(body.error || 'Something went wrong. Try again.');
-        }
-        setSubmitting(false);
-        return;
-      }
-
-      const data = await res.json();
-      onLogin(data.token);
-    } catch {
-      setError('Could not reach the server. Check your connection and try again.');
-      setSubmitting(false);
-    }
-  }
-
+// The branded full-screen card shared by sign-in and the first-sign-in
+// password change.
+function LoginFrame({ title, sub, children }) {
   return (
     <div className="portal-login">
       <div className="portal-login__panel">
@@ -51,38 +13,9 @@ export default function PortalLogin({ onLogin }) {
             <div className="portal-login__org">Casuals Management System</div>
           </div>
         </div>
-        <h1 className="portal-login__title">Welcome back</h1>
-        <p className="portal-login__sub">Sign in to see attendance, approvals and reports.</p>
-
-        <form onSubmit={handleSubmit}>
-          <label className="portal-field">
-            <span>Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="username"
-              required
-            />
-          </label>
-
-          <label className="portal-field">
-            <span>Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </label>
-
-          {error && <div className="portal-error" role="alert">{error}</div>}
-
-          <button type="submit" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+        <h1 className="portal-login__title">{title}</h1>
+        <p className="portal-login__sub">{sub}</p>
+        {children}
       </div>
 
       <style>{`
@@ -145,6 +78,12 @@ export default function PortalLogin({ onLogin }) {
           border-color: var(--accent);
           box-shadow: 0 0 0 3px var(--accent-bg);
         }
+        .portal-field small {
+          display: block;
+          font-size: 12px;
+          color: var(--muted);
+          margin-top: 6px;
+        }
         .portal-error {
           color: var(--critical);
           background: var(--critical-bg);
@@ -172,6 +111,16 @@ export default function PortalLogin({ onLogin }) {
         .portal-login button:hover:not(:disabled) {
           background: var(--accent-hover);
         }
+        .portal-login button.portal-login__secondary {
+          background: none;
+          color: var(--muted);
+          font-weight: 500;
+          margin-top: 10px;
+        }
+        .portal-login button.portal-login__secondary:hover:not(:disabled) {
+          background: none;
+          color: var(--text);
+        }
 
         /* Phones: a full-screen sign-in, like an app's. */
         @media (max-width: 600px) {
@@ -192,5 +141,167 @@ export default function PortalLogin({ onLogin }) {
         }
       `}</style>
     </div>
+  );
+}
+
+export default function PortalLogin({ onLogin }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    setSubmitting(true);
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      if (!res.ok) {
+        // 401 stays generic (don't reveal whether the email exists); other
+        // failures — rate limiting, validation, server errors — are real
+        // conditions worth telling the user about specifically, since
+        // "password incorrect" is actively misleading for those.
+        if (res.status === 401) {
+          setError('Email or password is incorrect.');
+        } else {
+          const body = await res.json().catch(() => ({}));
+          setError(body.error || 'Something went wrong. Try again.');
+        }
+        setSubmitting(false);
+        return;
+      }
+
+      const data = await res.json();
+      onLogin(data.token);
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.');
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <LoginFrame title="Welcome back" sub="Sign in to see attendance, approvals and reports.">
+      <form onSubmit={handleSubmit}>
+        <label className="portal-field">
+          <span>Email</span>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="username"
+            required
+          />
+        </label>
+
+        <label className="portal-field">
+          <span>Password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+
+        {error && <div className="portal-error" role="alert">{error}</div>}
+
+        <button type="submit" disabled={submitting}>
+          {submitting ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </LoginFrame>
+  );
+}
+
+const MIN_PASSWORD_LENGTH = 8;
+
+// Shown instead of the portal while the account still has a password someone
+// else chose (a new account, or an HR/admin reset). The API refuses
+// everything else until this is done.
+export function ChangePasswordScreen({ api, user, onChanged, onLogout }) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError('');
+    if (newPassword.length < MIN_PASSWORD_LENGTH) { setError(`Your new password must be at least ${MIN_PASSWORD_LENGTH} characters.`); return; }
+    if (newPassword !== confirm) { setError('The new passwords don’t match.'); return; }
+    if (newPassword === currentPassword) { setError('Choose a password different from the one you were given.'); return; }
+
+    setSubmitting(true);
+    try {
+      await api('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <LoginFrame
+      title="Choose a new password"
+      sub={`Welcome${user.name ? `, ${user.name}` : ''}. The password you were given is for your first sign-in only — choose your own to continue.`}
+    >
+      <form onSubmit={handleSubmit}>
+        {/* Lets password managers save the new password against the right account. */}
+        <input type="email" value={user.email} autoComplete="username" readOnly hidden />
+
+        <label className="portal-field">
+          <span>Password you were given</span>
+          <input
+            type="password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+
+        <label className="portal-field">
+          <span>New password</span>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={MIN_PASSWORD_LENGTH}
+            required
+          />
+          <small>At least {MIN_PASSWORD_LENGTH} characters.</small>
+        </label>
+
+        <label className="portal-field">
+          <span>Confirm new password</span>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+        </label>
+
+        {error && <div className="portal-error" role="alert">{error}</div>}
+
+        <button type="submit" disabled={submitting}>
+          {submitting ? 'Saving…' : 'Save and continue'}
+        </button>
+        <button type="button" className="portal-login__secondary" onClick={onLogout}>
+          Sign out
+        </button>
+      </form>
+    </LoginFrame>
   );
 }
