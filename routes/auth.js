@@ -6,6 +6,8 @@ const authenticate = require('../middleware/authenticate');
 const QRCode = require('qrcode');
 const { passwordProblem } = require('../services/passwordPolicy');
 const { generateSecret, verifyCode, otpauthUri, formatSecret } = require('../services/totp');
+const { generateCode, hashCode, checkCode: checkEmailCodeValue, resendWait, maskEmail, CODE_TTL_MS, CLEARED: CLEARED_EMAIL_CODE } = require('../services/emailCode');
+const { sendSignInCode } = require('../services/notify');
 
 const router = express.Router();
 
@@ -59,12 +61,26 @@ router.post('/login', async (req, res) => {
     }
     failedAttempts.delete(limitKey);
 
-    // System Admins also need an authenticator code: the password only earns
-    // a short-lived pass to the code step (or, the first time, to setting
-    // the authenticator up).
+    // System Admins also need a code — from their authenticator app or by
+    // email: the password only earns a short-lived pass to the code step
+    // (or, the first time, to setting two-step sign-in up). Email-code users
+    // are sent their code straight away.
     if (needsTwoStep(user)) {
-      res.locals.audit = { summary: user.mfaEnabledAt ? 'Password accepted — waiting for the authenticator code' : 'Password accepted — setting up two-step sign-in' };
-      return res.json({ [user.mfaEnabledAt ? 'mfaRequired' : 'mfaSetupRequired']: true, mfaToken: issueMfaToken(user) });
+      const mfaToken = issueMfaToken(user);
+      if (!user.mfaEnabledAt) {
+        res.locals.audit = { summary: 'Password accepted — setting up two-step sign-in' };
+        return res.json({ mfaSetupRequired: true, mfaToken, emailHint: maskEmail(user.email) });
+      }
+      const method = methodOf(user);
+      const email = method === 'email' ? await issueEmailCode(user) : null;
+      res.locals.audit = { summary: `Password accepted — waiting for the ${method === 'email' ? 'emailed' : 'authenticator'} code` };
+      return res.json({
+        mfaRequired: true,
+        mfaToken,
+        method,
+        emailHint: maskEmail(user.email),
+        ...(email ? { emailSent: email.sent, emailError: email.error || null } : {})
+      });
     }
 
     res.json({ token: issueSession(user) });
@@ -78,13 +94,71 @@ router.post('/login', async (req, res) => {
 //
 // Required for System Admins. The session token they get carries mfa: true,
 // and authenticate refuses a System Admin session without it — so a new
-// System Admin, or one whose authenticator was reset, is sent through setup
-// at their next sign-in.
+// System Admin, or one whose two-step sign-in was reset, is sent through
+// setup at their next sign-in.
+//
+// Two methods, chosen at setup: an authenticator app (TOTP) or a code
+// emailed at each sign-in. App users can also ask for an emailed code
+// instead (e.g. phone left at home).
 
 const MFA_TOKEN_TTL = '10m';
 
 function needsTwoStep(user) {
   return user.role === 'sysadmin';
+}
+
+function methodOf(user) {
+  return user.mfaMethod || (user.mfaSecret ? 'app' : 'email');
+}
+
+// Makes a fresh emailed code and sends it. { sent, error?, wait? }.
+async function issueEmailCode(user) {
+  const wait = resendWait(user);
+  if (wait) return { sent: false, wait, error: `A code was sent less than a minute ago — wait ${wait} seconds before asking for another.` };
+  const code = generateCode();
+  const now = new Date();
+  await prisma.portalUser.update({
+    where: { id: user.id },
+    data: { mfaEmailCodeHash: hashCode(user.id, code), mfaEmailCodeExpiresAt: new Date(now.getTime() + CODE_TTL_MS), mfaEmailCodeSentAt: now, mfaEmailCodeAttempts: 0 }
+  });
+  try {
+    await sendSignInCode({ email: user.email, name: user.name, code });
+    return { sent: true };
+  } catch (err) {
+    await prisma.portalUser.update({ where: { id: user.id }, data: { ...CLEARED_EMAIL_CODE, mfaEmailCodeSentAt: null } });
+    console.error(`Sign-in code email to ${user.email} failed:`, err.message);
+    return { sent: false, error: `The code couldn’t be emailed (${err.message}).` };
+  }
+}
+
+// Checks an emailed code; on failure sends the response and returns false.
+async function checkEmailCode(req, res, user) {
+  const limitKey = `mfa|${user.id}`;
+  if (isRateLimited(limitKey)) {
+    res.status(429).json({ error: 'Too many wrong codes. Try again in 15 minutes.' });
+    return false;
+  }
+  const result = checkEmailCodeValue(user, req.body?.code);
+  if (result === 'ok') {
+    failedAttempts.delete(limitKey);
+    // Use it up in one step, so the same code can't be used twice at once.
+    const claimed = await prisma.portalUser.updateMany({ where: { id: user.id, mfaEmailCodeHash: user.mfaEmailCodeHash }, data: CLEARED_EMAIL_CODE });
+    if (claimed.count === 1) return true;
+    res.status(400).json({ error: 'That code has already been used. Send a new one.' });
+    return false;
+  }
+  if (result === 'wrong') {
+    recordFailure(limitKey);
+    await prisma.portalUser.update({ where: { id: user.id }, data: { mfaEmailCodeAttempts: { increment: 1 } } });
+  }
+  const message = {
+    none: 'No code has been emailed yet — use “Email me a code”.',
+    expired: 'That code has expired. Send a new one.',
+    locked: 'Too many wrong tries for that code. Send a new one.',
+    wrong: 'That code isn’t right. Enter the 6-digit code from the latest email.'
+  }[result];
+  res.status(400).json({ error: message });
+  return false;
 }
 
 function issueSession(user, { mfa = false } = {}) {
@@ -152,22 +226,48 @@ async function checkCode(req, res, user, secret) {
   return step;
 }
 
-// Confirms setup with a code from the newly scanned secret, turns two-step
-// sign-in on and signs them in.
+// Sends (or re-sends) an emailed code: for email-code users, for app users
+// who'd rather get a code by email, and during setup of the email method.
+router.post('/mfa/email/send', async (req, res) => {
+  try {
+    const user = await accountForMfaToken(req.body?.mfaToken, res);
+    if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
+    const result = await issueEmailCode(user);
+    if (result.wait) return res.status(429).json({ error: result.error, wait: result.wait });
+    if (!result.sent) return res.status(503).json({ error: result.error });
+    res.json({ sent: true, to: maskEmail(user.email) });
+  } catch (err) {
+    console.error('Sending a sign-in code failed:', err);
+    res.status(500).json({ error: 'Could not send a code. Try again shortly.' });
+  }
+});
+
+// Confirms setup and signs them in. method "app": a code from the newly
+// scanned secret. method "email": the code just emailed by /mfa/email/send.
 router.post('/mfa/enable', async (req, res) => {
   try {
     const user = await accountForMfaToken(req.body?.mfaToken, res);
     if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
     if (user.mfaEnabledAt) return res.status(409).json({ error: 'Two-step sign-in is already set up for this account.' });
-    if (!user.mfaPendingSecret) return res.status(400).json({ error: 'Start the setup again — scan a new QR code.' });
 
+    if (req.body?.method === 'email') {
+      if (!(await checkEmailCode(req, res, user))) return undefined;
+      await prisma.portalUser.update({
+        where: { id: user.id },
+        data: { mfaMethod: 'email', mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: new Date(), mfaLastStep: null }
+      });
+      res.locals.audit = { summary: 'Set up two-step sign-in (email codes) and signed in' };
+      return res.json({ token: issueSession(user, { mfa: true }) });
+    }
+
+    if (!user.mfaPendingSecret) return res.status(400).json({ error: 'Start the setup again — scan a new QR code.' });
     const step = await checkCode(req, res, user, user.mfaPendingSecret);
     if (step === null) return undefined;
     await prisma.portalUser.update({
       where: { id: user.id },
-      data: { mfaSecret: user.mfaPendingSecret, mfaPendingSecret: null, mfaEnabledAt: new Date(), mfaLastStep: step }
+      data: { mfaMethod: 'app', mfaSecret: user.mfaPendingSecret, mfaPendingSecret: null, mfaEnabledAt: new Date(), mfaLastStep: step }
     });
-    res.locals.audit = { summary: 'Set up two-step sign-in and signed in' };
+    res.locals.audit = { summary: 'Set up two-step sign-in (authenticator app) and signed in' };
     res.json({ token: issueSession(user, { mfa: true }) });
   } catch (err) {
     console.error('Two-step enable failed:', err);
@@ -175,13 +275,23 @@ router.post('/mfa/enable', async (req, res) => {
   }
 });
 
-// The everyday second step: the code from their authenticator app.
+// The everyday second step: the code from their authenticator app, or the
+// one emailed to them (channel: "email" — email-code users always, app
+// users when they asked for one).
 router.post('/mfa/verify', async (req, res) => {
   try {
     const user = await accountForMfaToken(req.body?.mfaToken, res);
     if (!user) return res.status(401).json({ error: EXPIRED, code: 'MFA_EXPIRED' });
     if (!user.mfaEnabledAt) return res.status(409).json({ error: 'Two-step sign-in isn’t set up yet — sign in again to set it up.' });
 
+    const channel = req.body?.channel === 'email' || methodOf(user) === 'email' ? 'email' : 'app';
+    if (channel === 'email') {
+      if (!(await checkEmailCode(req, res, user))) return undefined;
+      res.locals.audit = { summary: 'Signed in (password + emailed code)' };
+      return res.json({ token: issueSession(user, { mfa: true }) });
+    }
+
+    if (!user.mfaSecret) return res.status(400).json({ error: 'This account uses emailed codes.' });
     const step = await checkCode(req, res, user, user.mfaSecret);
     if (step === null) return undefined;
     // Remember the step so the same code can't be used again.

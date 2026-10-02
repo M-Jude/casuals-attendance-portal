@@ -9,7 +9,7 @@ const { generatedStamp } = require('../reports/reportFormat');
 // request that changes something or downloads a file; record() is also
 // called directly for events that aren't a plain request (a failed login).
 
-const SECRET_KEYS = /pass(word)?|token|secret|authorization|hash/i;
+const SECRET_KEYS = /pass(word)?|token|secret|authorization|hash|^code$/i; // code: two-step sign-in codes
 const MAX_DETAIL_CHARS = 8000;
 
 // Request bodies go into the log with anything secret masked, and trimmed

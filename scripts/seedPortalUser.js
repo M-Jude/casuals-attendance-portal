@@ -70,7 +70,7 @@ async function resetPassword(email, newPassword) {
 async function resetTwoStep(email) {
   const user = await prisma.portalUser.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) fail(`No portal user found with email "${email}".`);
-  await prisma.portalUser.update({ where: { id: user.id }, data: { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null } });
+  await prisma.portalUser.update({ where: { id: user.id }, data: { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null, mfaMethod: null, mfaEmailCodeHash: null, mfaEmailCodeExpiresAt: null, mfaEmailCodeSentAt: null, mfaEmailCodeAttempts: 0 } });
   console.log(`Two-step sign-in reset for ${user.email}. They'll set up a new authenticator at their next sign-in.`);
 }
 

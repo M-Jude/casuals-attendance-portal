@@ -15,7 +15,7 @@ const router = express.Router();
 const SALT_ROUNDS = 12;
 
 const PUBLIC_FIELDS = {
-  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true, mfaEnabledAt: true,
+  id: true, email: true, name: true, role: true, crewId: true, active: true, createdAt: true, casualWorkerId: true, mustChangePassword: true, mfaEnabledAt: true, mfaMethod: true,
   crew: { select: { id: true, name: true } },
   worker: { select: { id: true, name: true, biostarUserId: true, status: true } }
 };
@@ -144,7 +144,10 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
     // A lost authenticator: another System Admin clears it, and the account
     // sets a new one up at its next sign-in. (Not your own — that would let a
     // stolen session remove the second step.)
-    const clearTwoStep = () => Object.assign(data, { mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null });
+    const clearTwoStep = () => Object.assign(data, {
+      mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null, mfaMethod: null,
+      mfaEmailCodeHash: null, mfaEmailCodeExpiresAt: null, mfaEmailCodeSentAt: null, mfaEmailCodeAttempts: 0
+    });
     if (resetTwoStep === true) {
       if (req.user.role !== 'sysadmin' || target.role !== 'sysadmin') return res.status(403).json({ error: 'Only a System Admin can reset another System Admin’s two-step sign-in.' });
       if (target.id === req.user.id) return res.status(400).json({ error: 'Ask another System Admin to reset your two-step sign-in.' });

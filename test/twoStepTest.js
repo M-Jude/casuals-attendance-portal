@@ -4,8 +4,17 @@
 //   node test/twoStepTest.js
 
 process.env.JWT_SECRET = 'test-secret';
+process.env.SMTP_HOST = 'smtp.example.com';
 
 const path = require('path');
+
+// Emails are captured, not sent.
+const mails = [];
+require.cache[require.resolve('nodemailer')] = {
+  loaded: true,
+  exports: { createTransport: () => ({ sendMail: async (m) => { mails.push(m); return { response: '250' }; } }) }
+};
+const lastCode = () => (mails[mails.length - 1]?.text.match(/sign-in code is: (\d{6})/) || [])[1];
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
@@ -20,7 +29,11 @@ require.cache[path.resolve(__dirname, '../prismaClient.js')] = {
   exports: {
     portalUser: {
       findUnique: async ({ where }) => (where.id !== undefined ? users.get(where.id) : [...users.values()].find((u) => u.email === where.email)) || null,
-      update: async ({ where, data }) => Object.assign(users.get(where.id), data),
+      update: async ({ where, data }) => {
+        const u = users.get(where.id);
+        for (const [k, v] of Object.entries(data)) u[k] = v && typeof v === 'object' && 'increment' in v ? (u[k] || 0) + v.increment : v;
+        return u;
+      },
       updateMany: async ({ where, data }) => {
         const hits = [...users.values()].filter((u) => matches(u, where));
         hits.forEach((u) => Object.assign(u, data));
@@ -102,6 +115,57 @@ async function main() {
 
     const forged = jwt.sign({ userId: 1, purpose: 'mfa' }, 'wrong-secret');
     check('a forged pass is refused', (await post('/api/auth/mfa/verify', { mfaToken: forged, code: '123456' })).status === 401);
+
+    // ---------------------------------------------------------- email codes
+    users.set(3, { id: 3, email: 'ops@caa.co.ug', name: 'Ops', role: 'sysadmin', active: true, subcontractorName: 'A', passwordHash: await bcrypt.hash('Ops#Pass12', 4), mustChangePassword: false, mfaSecret: null, mfaPendingSecret: null, mfaEnabledAt: null, mfaLastStep: null, mfaMethod: null, mfaEmailCodeHash: null, mfaEmailCodeExpiresAt: null, mfaEmailCodeSentAt: null, mfaEmailCodeAttempts: 0 });
+    const ops = users.get(3);
+    const login3 = await post('/api/auth/login', { email: 'ops@caa.co.ug', password: 'Ops#Pass12' });
+    check('email setup: offered at first sign-in, with a masked address', login3.body.mfaSetupRequired && login3.body.emailHint === 'o•••@caa.co.ug');
+    const sent = await post('/api/auth/mfa/email/send', { mfaToken: login3.body.mfaToken });
+    check('email setup: a code is emailed to the account', sent.status === 200 && mails.length === 1 && mails[0].to === 'ops@caa.co.ug' && /^\d{6}$/.test(lastCode()));
+    check('only a hash of the code is stored', ops.mfaEmailCodeHash && ops.mfaEmailCodeHash !== lastCode() && ops.mfaEmailCodeHash.length === 64);
+    const tooSoon = await post('/api/auth/mfa/email/send', { mfaToken: login3.body.mfaToken });
+    check('resend within a minute is refused, with the wait', tooSoon.status === 429 && tooSoon.body.wait > 0 && mails.length === 1);
+    const setupOk = await post('/api/auth/mfa/enable', { mfaToken: login3.body.mfaToken, code: lastCode(), method: 'email' });
+    check('email setup: the emailed code confirms it and signs in', setupOk.status === 200 && setupOk.body.token && ops.mfaMethod === 'email' && ops.mfaEnabledAt);
+    check('…and that session works', await get(setupOk.body.token) === 200);
+
+    ops.mfaEmailCodeSentAt = new Date(Date.now() - 120000); // a while later
+    const login4 = await post('/api/auth/login', { email: 'ops@caa.co.ug', password: 'Ops#Pass12' });
+    check('email user: a code is sent automatically at sign-in', login4.body.mfaRequired && login4.body.method === 'email' && login4.body.emailSent === true && mails.length === 2);
+    const code4 = lastCode();
+    const bad = await post('/api/auth/mfa/verify', { mfaToken: login4.body.mfaToken, code: code4 === '000000' ? '111111' : '000000' });
+    check('a wrong emailed code is refused and counted', bad.status === 400 && ops.mfaEmailCodeAttempts === 1);
+    const good = await post('/api/auth/mfa/verify', { mfaToken: login4.body.mfaToken, code: code4 });
+    check('the right emailed code signs in', good.status === 200 && good.body.token);
+    const again = await post('/api/auth/mfa/verify', { mfaToken: login4.body.mfaToken, code: code4 });
+    check('…and can’t be used twice', again.status === 400);
+
+    ops.mfaEmailCodeSentAt = new Date(Date.now() - 120000);
+    await post('/api/auth/mfa/email/send', { mfaToken: login4.body.mfaToken });
+    const code5 = lastCode();
+    ops.mfaEmailCodeExpiresAt = new Date(Date.now() - 1000);
+    check('an expired code is refused', (await post('/api/auth/mfa/verify', { mfaToken: login4.body.mfaToken, code: code5 })).status === 400);
+
+    ops.mfaEmailCodeSentAt = new Date(Date.now() - 120000);
+    await post('/api/auth/mfa/email/send', { mfaToken: login4.body.mfaToken });
+    const code6 = lastCode();
+    ops.mfaEmailCodeAttempts = 5;
+    const locked = await post('/api/auth/mfa/verify', { mfaToken: login4.body.mfaToken, code: code6 });
+    check('after 5 wrong tries even the right code is refused', locked.status === 400 && /Send a new one/.test(locked.body.error));
+
+    // An authenticator-app user asking for an email instead.
+    Object.assign(users.get(1), { mfaMethod: 'app', mfaSecret: secret, mfaEnabledAt: new Date(), mfaLastStep: null, mfaEmailCodeSentAt: null, mfaEmailCodeAttempts: 0 });
+    const login5 = await post('/api/auth/login', { email: 'ict@caa.co.ug', password: 'Admin#Pass1' });
+    check('app user: no email sent unless asked', login5.body.method === 'app' && login5.body.emailSent === undefined);
+    const before = mails.length;
+    const ask = await post('/api/auth/mfa/email/send', { mfaToken: login5.body.mfaToken });
+    check('app user: can ask for an emailed code instead', ask.status === 200 && mails.length === before + 1 && mails[mails.length - 1].to === 'ict@caa.co.ug');
+    const viaEmail = await post('/api/auth/mfa/verify', { mfaToken: login5.body.mfaToken, code: lastCode(), channel: 'email' });
+    check('app user: the emailed code signs them in', viaEmail.status === 200 && viaEmail.body.token);
+
+    const { sanitize } = require('../services/audit');
+    check('codes are masked in the audit log', sanitize({ mfaToken: 'x', code: '123456' }).code === '••••••');
   } finally {
     server.close();
   }

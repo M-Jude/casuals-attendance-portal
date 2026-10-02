@@ -50,8 +50,9 @@ rule('POST', '/api/auth/login', {
 rule('POST', '/api/auth/logout', { category: 'auth', action: 'auth.logout', summary: () => 'Signed out' });
 rule('POST', '/api/auth/change-password', { category: 'auth', action: 'auth.password-change', summary: () => 'Changed their password' });
 rule('POST', '/api/auth/mfa/setup', { category: 'auth', action: 'auth.mfa-setup', summary: () => 'Started setting up two-step sign-in' });
-rule('POST', '/api/auth/mfa/enable', { category: 'auth', action: 'auth.mfa-enable', summary: ({ ok }) => (ok ? 'Set up two-step sign-in' : 'Two-step setup: wrong code') });
-rule('POST', '/api/auth/mfa/verify', { category: 'auth', action: 'auth.mfa-verify', summary: ({ ok }) => (ok ? 'Signed in (password + authenticator code)' : 'Wrong authenticator code') });
+rule('POST', '/api/auth/mfa/enable', { category: 'auth', action: 'auth.mfa-enable', summary: ({ ok, body }) => (ok ? `Set up two-step sign-in (${body.method === 'email' ? 'email codes' : 'authenticator app'})` : 'Two-step setup: wrong code') });
+rule('POST', '/api/auth/mfa/verify', { category: 'auth', action: 'auth.mfa-verify', summary: ({ ok, body }) => (ok ? 'Signed in with a two-step code' : `Wrong ${body.channel === 'email' ? 'emailed' : 'two-step'} code`) });
+rule('POST', '/api/auth/mfa/email/send', { category: 'auth', action: 'auth.mfa-email', summary: ({ ok }) => (ok ? 'Emailed a sign-in code' : 'Sign-in code email not sent') });
 
 // ------------------------------------------------------------------ accounts
 
