@@ -100,7 +100,7 @@ const week = resolvePeriod({ period: 'week', date: '2026-09-21' });
   check('Exceptions: minutes late from shift start', late.rows[0].minutes === 50);
   const early = r.sections.find((s) => s.title === 'Early check-outs');
   check('Exceptions: minutes early from shift end', early.rows[0].minutes === 120);
-  check('Exceptions: no-show, missing, multi and unscheduled sections', ['No-shows', 'Missing punches', 'Multiple punches', 'Unscheduled shifts'].every((t) => r.sections.some((s) => s.title === t)));
+  check('Exceptions: no-show, missing, multi and unscheduled sections', ['Absent', 'Missing punches', 'Multiple punches', 'Unscheduled shifts'].every((t) => r.sections.some((s) => s.title === t)));
   check('Exceptions: worst offenders first', r.sections[0].title === 'Workers with the most exceptions');
 }
 {

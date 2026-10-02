@@ -145,7 +145,7 @@ export default function ShiftRulesPage({ api, user }) {
           <li>A double shift is two shifts worked back to back — a Day and that evening’s Night, or a Night and the next morning’s Day. It counts as two shifts, and as one double shift on the date it started. A Day and that evening’s Night show as one “Day + Night” line, from the Day’s clock-in to the Night’s clock-out, on the Day’s date — each shift is still approved by its own supervisor. One badge at the changeover (17:00 or 08:00) ends the first shift and starts the second; with no badge there the split is made at the handover time and marked “implied”.</li>
           <li>Hours worked are check-out minus check-in. No meal or break time is deducted.</li>
           <li>Punches outside anyone’s schedule are still shown, marked “unscheduled”, so a supervisor can record the exception.</li>
-          <li>A scheduled shift with no punches at all is a no-show.</li>
+          <li>A scheduled shift with no punches at all is marked absent.</li>
         </ul>
       </div>
 

@@ -58,7 +58,7 @@ const change = compare(none, previous);
 check('change on previous period', change.shiftsWorked === 2 && change.noShows === 1);
 
 const text = digestText({ overview: none, change, periodLabel: 'week of 28 Sep – 4 Oct 2026', portalUrl: 'https://p.example' });
-check('digest: headline figures', /Shifts worked: 5 \(Day 3, Night 2\) \(\+2 on the week before\)/.test(text) && /No-shows: 1/.test(text));
+check('digest: headline figures', /Shifts worked: 5 \(Day 3, Night 2\) \(\+2 on the week before\)/.test(text) && /Absent: 1/.test(text));
 check('digest: by crew and approvals', /Crew A: 3 shifts/.test(text) && /Approvals: 2 of 3 batches approved \(50% on time\)/.test(text));
 check('digest: link to the overview', text.endsWith('Open the overview: https://p.example/?page=overview'));
 check('digest: no cost line', !/cost|UGX/i.test(text));

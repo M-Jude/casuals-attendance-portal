@@ -11,7 +11,7 @@ function thisMonthEat() {
 }
 
 // A headline figure and its change on the previous month. `lowerIsBetter`
-// colours a rise in no-shows red rather than green.
+// colours a rise in absences red rather than green.
 function Tile({ label, value, sub, delta, unit = '', lowerIsBetter = false, previousLabel }) {
   let cls = 'ov__delta--flat';
   if (delta) cls = (delta > 0) !== lowerIsBetter ? 'ov__delta--good' : 'ov__delta--bad';
@@ -76,7 +76,7 @@ export default function OverviewPage({ api }) {
             <Tile label="Shifts worked" value={num(t.shiftsWorked)} sub={`Day ${num(t.dayShifts)} · Night ${num(t.nightShifts)}`} delta={c.shiftsWorked} previousLabel={prevLabel} />
             <Tile label="Hours worked" value={num(t.hours)} delta={c.hours} previousLabel={prevLabel} />
             <Tile label="Attendance" value={t.attendanceRate === null ? '—' : `${t.attendanceRate}%`} sub="scheduled shifts turned up for" delta={c.attendanceRate} unit=" pts" previousLabel={prevLabel} />
-            <Tile label="No-shows" value={num(t.noShows)} delta={c.noShows} lowerIsBetter previousLabel={prevLabel} />
+            <Tile label="Absent" value={num(t.noShows)} delta={c.noShows} lowerIsBetter previousLabel={prevLabel} />
             <Tile label="Late arrivals" value={num(t.late)} delta={c.late} lowerIsBetter previousLabel={prevLabel} />
             <Tile label="Early check-outs" value={num(t.earlyOut)} delta={c.earlyOut} lowerIsBetter previousLabel={prevLabel} />
             <Tile label="Missing punches" value={num(t.missingPunch)} sub="no check-in or no check-out" delta={c.missingPunch} lowerIsBetter previousLabel={prevLabel} />
@@ -87,7 +87,7 @@ export default function OverviewPage({ api }) {
             <h3 className="panel__title">By crew</h3>
             {o.byCrew.length === 0 ? <div className="empty">No shifts this month.</div> : (
               <table className="table">
-                <thead><tr><th>Crew</th><th>Workers</th><th>Shifts</th><th>Hours</th><th>Attendance</th><th>No-shows</th><th>Late</th></tr></thead>
+                <thead><tr><th>Crew</th><th>Workers</th><th>Shifts</th><th>Hours</th><th>Attendance</th><th>Absent</th><th>Late</th></tr></thead>
                 <tbody>
                   {o.byCrew.map((r) => (
                     <tr key={r.crew}>

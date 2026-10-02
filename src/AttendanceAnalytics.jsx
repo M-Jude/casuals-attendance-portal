@@ -142,7 +142,7 @@ export default function AttendanceAnalytics({ rows }) {
     { label: 'PUNCTUALITY', value: punctuality, sub: `${stats.punctual} of ${stats.completed} completed shifts`, accent: STATUS_COLOR['on-time'] },
     { label: 'LATE ARRIVALS', value: String(stats.counts.late), sub: `${pct(stats.counts.late, stats.total)}% of records`, accent: STATUS_COLOR.late },
     { label: 'NO CHECKOUT', value: String(stats.counts['no-checkout']), sub: `${pct(stats.counts['no-checkout'], stats.total)}% of records`, accent: STATUS_COLOR['no-checkout'] },
-    { label: 'NO-SHOWS', value: String(stats.counts['no-show']), sub: 'scheduled, no punch activity', accent: STATUS_COLOR['no-show'] }
+    { label: 'ABSENT', value: String(stats.counts['no-show']), sub: 'scheduled, no punch activity', accent: STATUS_COLOR['no-show'] }
   ];
 
   const shiftBits = [...stats.byShift.entries()].map(([name, n]) => `${name} shift: ${n}`);
@@ -164,7 +164,7 @@ export default function AttendanceAnalytics({ rows }) {
         id="breakdown"
         title="Attendance breakdown"
         hint="by status"
-        summary={`${stats.counts['on-time'] + stats.counts.early} on time or early · ${stats.counts.late} late · ${stats.counts['no-show']} no-show${stats.counts['in-progress'] ? ` · ${stats.counts['in-progress']} in progress` : ''}`}
+        summary={`${stats.counts['on-time'] + stats.counts.early} on time or early · ${stats.counts.late} late · ${stats.counts['no-show']} absent${stats.counts['in-progress'] ? ` · ${stats.counts['in-progress']} in progress` : ''}`}
         open={openPanels.has('breakdown')}
         onToggle={togglePanel}
       >
@@ -223,7 +223,7 @@ export default function AttendanceAnalytics({ rows }) {
         <Panel
           id="attention"
           title="Workers needing attention"
-          hint={`top ${Math.min(10, stats.attention.length)} by late arrivals, no checkouts and no-shows`}
+          hint={`top ${Math.min(10, stats.attention.length)} by late arrivals, no checkouts and absences`}
           summary={`${stats.attention.length} worker${stats.attention.length === 1 ? '' : 's'} with issues · most: ${stats.attention[0].worker.name}`}
           open={openPanels.has('attention')}
           onToggle={togglePanel}
@@ -234,7 +234,7 @@ export default function AttendanceAnalytics({ rows }) {
                 {th('worker', 'Worker')}
                 {th('late', 'Late', { align: 'center' })}
                 {th('noCheckout', 'No checkout', { align: 'center' })}
-                {th('noShow', 'No-show', { align: 'center' })}
+                {th('noShow', 'Absent', { align: 'center' })}
                 {th('earlyOut', 'Early out', { align: 'center' })}
                 {th('shifts', 'Shifts', { align: 'center' })}
               </tr>

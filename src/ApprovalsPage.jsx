@@ -20,7 +20,7 @@ function unitState(u) {
 function summaryBits(byStatus) {
   const bits = [];
   if (byStatus.late) bits.push(`${byStatus.late} late`);
-  if (byStatus['no-show']) bits.push(`${byStatus['no-show']} no-show`);
+  if (byStatus['no-show']) bits.push(`${byStatus['no-show']} absent`);
   if (byStatus['no-checkout']) bits.push(`${byStatus['no-checkout']} no checkout`);
   if (byStatus['no-checkin']) bits.push(`${byStatus['no-checkin']} no check-in`);
   return bits.join(' · ');
@@ -320,7 +320,7 @@ export default function ApprovalsPage({ api, user, onChanged }) {
               {th('batch', 'Batch')}
               {th('state', 'State', { title: 'Sort by state — escalated first' })}
               {th('records', 'Records')}
-              {th('issues', 'Needs a look', { title: 'Sort by number of late arrivals, no-shows and missing punches' })}
+              {th('issues', 'Needs a look', { title: 'Sort by number of late arrivals, absences and missing punches' })}
               {th('due', 'Approvable from')}
             </tr>
           </thead>

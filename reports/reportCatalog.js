@@ -23,7 +23,7 @@ const STATUS_LABEL = {
   late: 'Late',
   'no-checkout': 'No checkout',
   'no-checkin': 'No check-in',
-  'no-show': 'No-show',
+  'no-show': 'Absent',
   'in-progress': 'In progress'
 };
 
@@ -47,7 +47,7 @@ const REPORT_TYPES = [
   },
   {
     id: 'summary', name: 'Attendance summary', roles: EVERYONE, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
-    description: 'One line per worker: shifts worked, hours, lateness, no-shows and attendance rate. Use it as the weekly, monthly or all-time report.'
+    description: 'One line per worker: shifts worked, hours, lateness, absences and attendance rate. Use it as the weekly, monthly or all-time report.'
   },
   {
     id: 'individual', name: 'Individual worker', roles: EVERYONE, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month', needsWorker: true,
@@ -63,15 +63,15 @@ const REPORT_TYPES = [
   },
   {
     id: 'exceptions', name: 'Exceptions', roles: EVERYONE, periods: ['day', 'week', 'month', 'range', 'all'], defaultPeriod: 'week',
-    description: 'Late arrivals (with minutes late), no-shows, missing punches, early check-outs, multiple punches, unscheduled shifts and double shifts.'
+    description: 'Late arrivals (with minutes late), absences, missing punches, early check-outs, multiple punches, unscheduled shifts and double shifts.'
   },
   {
     id: 'daily-totals', name: 'Daily headcount', roles: EVERYONE, periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
-    description: 'One line per date: how many worked Day and Night, late, no-shows and hours.'
+    description: 'One line per date: how many worked Day and Night, late, absent and hours.'
   },
   {
     id: 'crew', name: 'Crew performance', roles: EVERYONE, periods: ['day', 'week', 'month', 'range', 'all'], defaultPeriod: 'week',
-    description: 'Each crew shift by shift: scheduled, worked, late, no-shows, hours and approval state.'
+    description: 'Each crew shift by shift: scheduled, worked, late, absent, hours and approval state.'
   },
   {
     id: 'approvals', name: 'Approval status', roles: [...MANAGERS, 'auditor', 'director'], periods: ['week', 'month', 'range', 'all'], defaultPeriod: 'month',
@@ -95,7 +95,7 @@ const COLUMN_LABELS = {
   flags: 'Flags / notes', approval: 'Approval', badges: 'All badges',
   lateBy: 'Late by', earlyBy: 'Left early by',
   worked: 'Shifts worked', day: 'Day shifts', night: 'Night shifts', avg: 'Avg h/shift',
-  punctual: 'On time', late: 'Late', missing: 'Missing punch', noShow: 'No-show',
+  punctual: 'On time', late: 'Late', missing: 'Missing punch', noShow: 'Absent',
   earlyOut: 'Early out', rate: 'Attendance %', week: 'Week', dates: 'Date columns',
   dayTotal: 'Day total', nightTotal: 'Night total', absent: 'Absent',
   approvedShifts: 'Approved shifts', approvedHours: 'Approved hours',
@@ -353,7 +353,7 @@ function overallKpis(ctx, rows) {
     { label: 'Punctuality', value: completed ? `${Math.round((rows.filter(punctual).length / completed) * 100)}%` : '-', sub: `${rows.filter(punctual).length} of ${completed} completed shifts`, tone: 'ok' },
     { label: 'Late arrivals', value: String(rows.filter((r) => r.status === 'late').length), sub: 'checked in after the grace period', tone: 'warn' },
     { label: 'Missing punches', value: String(rows.filter(missingPunch).length), sub: 'no check-out or no check-in', tone: 'grey' },
-    { label: 'No-shows', value: String(noShow), sub: 'scheduled, no punch activity', tone: 'critical' },
+    { label: 'Absent', value: String(noShow), sub: 'scheduled, no punch activity', tone: 'critical' },
     { label: 'Attendance rate', value: w.length + noShow ? `${Math.round((w.length / (w.length + noShow)) * 100)}%` : '-', sub: 'shifts worked / scheduled', tone: 'ok' }
   ];
 }
@@ -414,7 +414,7 @@ function buildDaily(ctx, rows) {
       const w = list.filter(worked);
       return {
         title: shiftLabel(ctx, s.name),
-        note: `${list.length} scheduled or present · ${w.length} worked · ${list.filter((r) => r.status === 'late').length} late · ${list.filter((r) => r.status === 'no-show').length} no-show · ${countDoubles(ctx, list)} on a double shift`,
+        note: `${list.length} scheduled or present · ${w.length} worked · ${list.filter((r) => r.status === 'late').length} late · ${list.filter((r) => r.status === 'no-show').length} absent · ${countDoubles(ctx, list)} on a double shift`,
         columns,
         rows: list.map((r) => shiftRecordRow(ctx, r)),
         totals: { worker: `${w.length} worked of ${list.length}`, hours: round2(list.reduce((a, r) => a + (r.hoursWorked || 0), 0)) }
@@ -448,7 +448,7 @@ function summaryColumns() {
     { key: 'punctual', label: 'On time', type: 'int', width: 0.7 },
     { key: 'late', label: 'Late', type: 'int', width: 0.6 },
     { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
-    { key: 'noShow', label: 'No-show', type: 'int', width: 0.7 },
+    { key: 'noShow', label: 'Absent', type: 'int', width: 0.7 },
     { key: 'earlyOut', label: 'Early out', type: 'int', width: 0.7 },
     { key: 'rate', label: 'Attendance', type: 'pct', width: 0.9 }
   ];
@@ -515,7 +515,7 @@ function buildIndividual(ctx, rows, period) {
         { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 },
         { key: 'late', label: 'Late', type: 'int', width: 0.7 },
         { key: 'missing', label: 'Missing punch', type: 'int', width: 1 },
-        { key: 'noShow', label: 'No-show', type: 'int', width: 0.8 }
+        { key: 'noShow', label: 'Absent', type: 'int', width: 0.8 }
       ],
       rows: [...weeks.entries()].map(([wk, rs]) => ({
         week: `${fmtDay(wk)} - ${fmtDay(addDays(wk, 6))}`,
@@ -545,7 +545,7 @@ function buildIndividual(ctx, rows, period) {
       { label: 'Attendance rate', value: w + noShow ? `${Math.round((w / (w + noShow)) * 100)}%` : '-', sub: 'shifts worked / scheduled', tone: 'ok' },
       { label: 'Late arrivals', value: String(t ? t.late : 0), sub: 'after the grace period', tone: 'warn' },
       { label: 'Missing punches', value: String(t ? t.missing : 0), sub: 'no check-out or check-in', tone: 'grey' },
-      { label: 'No-shows', value: String(noShow), sub: 'scheduled, no punches', tone: 'critical' },
+      { label: 'Absent', value: String(noShow), sub: 'scheduled, no punches', tone: 'critical' },
       { label: 'Early check-outs', value: String(t ? t.earlyOut : 0), sub: 'left before shift end', tone: 'warn' }
     ],
     sections
@@ -724,7 +724,7 @@ function buildExceptions(ctx, rows) {
       rows: late, totals: null
     },
     noShows.length && {
-      title: 'No-shows', note: `${noShows.length} scheduled shifts with no punches`,
+      title: 'Absent', note: `${noShows.length} scheduled shifts with no punches`,
       columns: [...lead, { key: 'source', label: 'Expected because', type: 'text', width: 1.6 }], rows: noShows, totals: null
     },
     missing.length && {
@@ -763,7 +763,7 @@ function buildExceptions(ctx, rows) {
       title: 'Workers with the most exceptions', note: `top ${tallies.length}`,
       columns: [COL.id, COL.worker, COL.crew,
         { key: 'late', label: 'Late', type: 'int', width: 0.6 }, { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
-        { key: 'noShow', label: 'No-show', type: 'int', width: 0.7 }, { key: 'earlyOut', label: 'Early out', type: 'int', width: 0.7 },
+        { key: 'noShow', label: 'Absent', type: 'int', width: 0.7 }, { key: 'earlyOut', label: 'Early out', type: 'int', width: 0.7 },
         { key: 'issues', label: 'Total', type: 'int', width: 0.6 }],
       rows: tallies, totals: null
     });
@@ -773,7 +773,7 @@ function buildExceptions(ctx, rows) {
     title: 'Exceptions report',
     kpis: [
       { label: 'Late arrivals', value: String(late.length), sub: late.length ? `avg ${Math.round(late.reduce((a, r) => a + r.minutes, 0) / late.length)} min late` : 'none', tone: 'warn' },
-      { label: 'No-shows', value: String(noShows.length), sub: 'scheduled, no punches', tone: 'critical' },
+      { label: 'Absent', value: String(noShows.length), sub: 'scheduled, no punches', tone: 'critical' },
       { label: 'Missing punches', value: String(missing.length), sub: 'only one side recorded', tone: 'grey' },
       { label: 'Early check-outs', value: String(earlyOut.length), sub: 'left before shift end', tone: 'warn' },
       { label: 'Multiple punches', value: String(multi.length), sub: 'extra badges mid-shift', tone: 'grey' },
@@ -821,7 +821,7 @@ function buildDailyTotals(ctx, rows) {
         { key: 'worked', label: 'Total worked', type: 'int', width: 0.9 },
         { key: 'late', label: 'Late', type: 'int', width: 0.6 },
         { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
-        { key: 'noShow', label: 'No-show', type: 'int', width: 0.7 },
+        { key: 'noShow', label: 'Absent', type: 'int', width: 0.7 },
         { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 },
         { key: 'approved', label: 'Approved', type: 'pct', width: 0.8 }
       ],
@@ -868,7 +868,7 @@ function buildCrew(ctx, rows) {
     { key: 'double', label: 'On a double', type: 'int', width: 0.8 },
     { key: 'late', label: 'Late', type: 'int', width: 0.6 },
     { key: 'missing', label: 'Missing punch', type: 'int', width: 0.9 },
-    { key: 'noShow', label: 'No-show', type: 'int', width: 0.7 },
+    { key: 'noShow', label: 'Absent', type: 'int', width: 0.7 },
     { key: 'hours', label: 'Hours', type: 'hours', width: 0.8 }
   ];
 

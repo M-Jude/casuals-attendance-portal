@@ -8,7 +8,7 @@ export const STATUS_LABEL = {
   late: 'Late',
   'no-checkout': 'No checkout',
   'no-checkin': 'No check-in',
-  'no-show': 'No-show',
+  'no-show': 'Absent',
   'in-progress': 'In progress'
 };
 
