@@ -1081,6 +1081,26 @@ body.no-scroll { overflow: hidden; }
   .toasts { left: 16px; right: 16px; bottom: calc(76px + env(safe-area-inset-bottom)); max-width: none; align-items: stretch; }
 }
 
+/* Confirmation dialog (confirm.jsx). */
+.confirm-backdrop {
+  position: fixed; inset: 0; z-index: 900; background: rgba(15, 23, 32, 0.45);
+  display: grid; place-items: center; padding: 16px;
+}
+.confirm {
+  width: min(480px, 100%); background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-lg);
+  padding: 22px 22px 18px;
+}
+.confirm__title { font-size: 18px; font-weight: 700; margin: 0 0 10px; }
+.confirm__body { font-size: 14px; line-height: 1.55; color: var(--muted); }
+.confirm__body p { margin: 0 0 8px; }
+.confirm__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+@media (max-width: 600px) {
+  .confirm-backdrop { place-items: end stretch; padding: 0; }
+  .confirm { border-radius: 16px 16px 0 0; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+  .confirm__actions .btn { flex: 1; }
+}
+
 /* Password strength checklist (PasswordChecklist.jsx). */
 .pw-checklist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; line-height: 1.7; }
 .pw-checklist__item { color: var(--muted); }

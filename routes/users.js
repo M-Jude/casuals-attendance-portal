@@ -101,7 +101,7 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
     // and they stay supervisor of it (the UI has already asked HR to confirm).
     if (moveToCrewId !== undefined) {
       if (target.role !== 'supervisor' || !target.casualWorkerId) return res.status(400).json({ error: 'Only a supervisor can be moved to another crew.' });
-      await setWorkerSchedule({
+      const recalculated = await setWorkerSchedule({
         workerId: target.casualWorkerId,
         type: 'crew',
         crewId: moveToCrewId,
@@ -111,7 +111,7 @@ router.patch('/users/:id', authenticate, requireRole('sysadmin', 'hr'), async (r
         subcontractorName: req.user.subcontractorName,
         supervisorAction: 'keep'
       });
-      return res.json({ user: await prisma.portalUser.findUnique({ where: { id }, select: PUBLIC_FIELDS }) });
+      return res.json({ user: await prisma.portalUser.findUnique({ where: { id }, select: PUBLIC_FIELDS }), recalculated });
     }
 
     const data = {};

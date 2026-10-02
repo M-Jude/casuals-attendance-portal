@@ -5,6 +5,7 @@ import { useSort } from './useSort';
 import PasswordChecklist from './PasswordChecklist';
 import { isStrongPassword } from './passwordPolicy';
 import { useBusy, useToast } from './toast';
+import { recalcNotice, recalcResult } from './confirm';
 
 // Roles that never have a worker record (the Director role, when added).
 const NO_WORKER_LINK = ['director'];
@@ -58,7 +59,9 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
         if (result.emailed === false) {
           toast.warn(`Password reset for ${who}, but the email couldn’t be sent (${result.emailError}). Give them the temporary password yourself.`);
         } else {
-          toast.success(result.emailed ? `Password reset. ${account.email} has been emailed the temporary password.` : successMessage);
+          toast.success(result.emailed
+            ? `Password reset. ${account.email} has been emailed the temporary password.`
+            : `${successMessage}${result.recalculated ? recalcResult(result.recalculated) : ''}`);
         }
         setEditing(false);
         setPassword('');
@@ -112,6 +115,7 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, onSav
                       From {formatDateLabel(moveFrom)} they rotate with <strong>{targetCrew?.name}</strong> and become its supervisor.
                       {account.crew ? ` ${account.crew.name} will need a new supervisor.` : ''} To take them off supervising instead, change their schedule in Schedules → Workers.
                     </p>
+                    <p className="decision__body">{recalcNotice(`${account.name}’s`, moveFrom)}</p>
                     <div className="decision__actions">
                       <button className="btn btn--primary btn--small" disabled={busy} onClick={() => patch({ moveToCrewId: Number(moveTo), effectiveFrom: moveFrom }, `${who} moved to ${targetCrew?.name} from ${formatDateLabel(moveFrom)}.`)}>{busy ? 'Moving…' : 'Yes, move them'}</button>
                       <button className="btn btn--link small" onClick={() => setConfirmMove(false)}>Cancel</button>

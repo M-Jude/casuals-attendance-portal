@@ -4,6 +4,7 @@ import { usePagination } from './Pagination';
 import SupervisorDecision from './SupervisorDecision';
 import { useSort } from './useSort';
 import { isAlreadyDone, useBusy, useToast } from './toast';
+import { recalcNotice, recalcResult, useConfirm } from './confirm';
 
 function addDays(dateStr, n) {
   return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
@@ -77,6 +78,7 @@ function CrewsTab({ api, user }) {
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
   const toast = useToast();
+  const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
   const isAdmin = user.role === 'sysadmin';
   const canSeeProposals = ['sysadmin', 'hr', 'admin_assistant'].includes(user.role);
@@ -89,13 +91,27 @@ function CrewsTab({ api, user }) {
 
   useEffect(() => { load(); }, [load]);
 
-  function resolve(p, action) {
+  async function resolve(p, action) {
+    if (action === 'apply') {
+      const crew = crews.find((c) => c.id === p.crew.id);
+      const ok = await confirm({
+        title: `Apply the new cycle to ${p.crew.name}?`,
+        body: (
+          <>
+            <p><strong>{describePattern(p.pattern)}</strong>, starting {formatDateLabel(p.anchorDate)}, from {formatDateLabel(p.effectiveFrom)}.</p>
+            <p>{recalcNotice(crew ? `${p.crew.name}’s ${crew.members} worker${crew.members === 1 ? '’s' : 's’'}` : `${p.crew.name}’s workers’`, p.effectiveFrom)}</p>
+          </>
+        ),
+        confirmLabel: 'Apply cycle'
+      });
+      if (!ok) return undefined;
+    }
     return guard(`proposal-${p.id}`, async () => {
       setError('');
       try {
-        await api(`/api/crews/proposals/${p.id}/${action}`, { method: 'POST' });
+        const result = await api(`/api/crews/proposals/${p.id}/${action}`, { method: 'POST' });
         toast.success(action === 'apply'
-          ? `${p.crew.name}’s new cycle applied from ${formatDateLabel(p.effectiveFrom)}. Attendance has been recalculated.`
+          ? `${p.crew.name}’s new cycle applied from ${formatDateLabel(p.effectiveFrom)}.${recalcResult(result.recalculated)}`
           : `Cycle change for ${p.crew.name} dismissed.`);
         load();
       } catch (err) {
@@ -171,8 +187,19 @@ function CrewsTab({ api, user }) {
                     initial={c.rotation}
                     submitLabel="Change cycle"
                     onSubmit={async (v) => {
-                      await api(`/api/crews/${c.id}/rotations`, { method: 'POST', body: v });
-                      toast.success(`${c.name}’s cycle changed from ${formatDateLabel(v.effectiveFrom)}. Attendance has been recalculated.`);
+                      const ok = await confirm({
+                        title: `Change ${c.name}’s cycle?`,
+                        body: (
+                          <>
+                            <p>To <strong>{describePattern(v.pattern)}</strong>, starting {formatDateLabel(v.anchorDate)}, from {formatDateLabel(v.effectiveFrom)}.</p>
+                            <p>{recalcNotice(`${c.name}’s ${c.members} worker${c.members === 1 ? '’s' : 's’'}`, v.effectiveFrom)}</p>
+                          </>
+                        ),
+                        confirmLabel: 'Change cycle'
+                      });
+                      if (!ok) return; // the form stays open as it was
+                      const result = await api(`/api/crews/${c.id}/rotations`, { method: 'POST', body: v });
+                      toast.success(`${c.name}’s cycle changed from ${formatDateLabel(v.effectiveFrom)}.${recalcResult(result.recalculated)}`);
                       setEditing(null);
                       load();
                     }}
@@ -235,16 +262,29 @@ function ScheduleEditor({ api, worker, crews, onSaved, onCancel }) {
   const [error, setError] = useState('');
   const [decision, setDecision] = useState(null); // set when the worker is a supervisor being moved
   const toast = useToast();
+  const confirm = useConfirm();
   const { guard, busy } = useBusy();
 
-  function save(supervisorAction) {
+  async function save(supervisorAction) {
+    const [type, crewId] = value.startsWith('crew:') ? ['crew', Number(value.slice(5))] : [value, null];
+    const label = type === 'crew' ? crews.find((c) => c.id === crewId)?.name : { 'fixed-day': 'Permanent Day', 'fixed-night': 'Permanent Night', unassigned: 'Unassigned' }[type];
+    // Confirmed once; the supervisor follow-up question (supervisorAction) doesn't ask again.
+    if (!supervisorAction && !(await confirm({
+      title: `Change ${worker.name}’s schedule?`,
+      body: (
+        <>
+          <p>From <strong>{worker.schedule.label}</strong> to <strong>{label}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
+          <p>{recalcNotice(`${worker.name}’s`, effectiveFrom)}</p>
+        </>
+      ),
+      confirmLabel: 'Change schedule'
+    }))) return undefined;
+
     return guard(async () => {
       setError('');
-      const [type, crewId] = value.startsWith('crew:') ? ['crew', Number(value.slice(5))] : [value, null];
-      const label = type === 'crew' ? crews.find((c) => c.id === crewId)?.name : { 'fixed-day': 'Permanent Day', 'fixed-night': 'Permanent Night', unassigned: 'Unassigned' }[type];
       try {
-        await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom, supervisorAction } });
-        toast.success(`${worker.name} is now on ${label} from ${formatDateLabel(effectiveFrom)}. Their attendance has been recalculated.`);
+        const result = await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom, supervisorAction } });
+        toast.success(`${worker.name} is now on ${label} from ${formatDateLabel(effectiveFrom)}.${recalcResult(result.recalculated)}`);
         onSaved();
       } catch (err) {
         if (err.data?.decision) setDecision(err.data.decision);
@@ -401,6 +441,7 @@ function ReviewTab({ api }) {
   const [effectiveFrom, setEffectiveFrom] = useState(todayEat());
   const [pending, setPending] = useState(null); // { item, decision } while HR decides about a supervisor
   const toast = useToast();
+  const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
   const { sorted: sortedItems, th, sortKey } = useSort(items, {
     worker: (i) => i.name,
@@ -420,13 +461,25 @@ function ReviewTab({ api }) {
 
   useEffect(() => { load(); }, [load]);
 
-  function act(item, action, supervisorAction) {
+  async function act(item, action, supervisorAction) {
+    // Accepting changes their schedule (and recalculates); dismissing doesn't.
+    if (action === 'accept' && !supervisorAction && !(await confirm({
+      title: `Move ${item.name} to ${item.suggested}?`,
+      body: (
+        <>
+          <p>From <strong>{item.current}</strong> to <strong>{item.suggested}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
+          <p>{recalcNotice(`${item.name}’s`, effectiveFrom)}</p>
+        </>
+      ),
+      confirmLabel: 'Change schedule'
+    }))) return undefined;
+
     return guard(item.workerId, async () => {
       setError('');
       try {
-        await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom, supervisorAction } });
+        const result = await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom, supervisorAction } });
         toast.success(action === 'accept'
-          ? `${item.name} moved to ${item.suggested} from ${formatDateLabel(effectiveFrom)}.`
+          ? `${item.name} moved to ${item.suggested} from ${formatDateLabel(effectiveFrom)}.${recalcResult(result.recalculated)}`
           : `Suggestion for ${item.name} dismissed.`);
         setPending(null);
         setItems((list) => list.filter((i) => i.workerId !== item.workerId));
@@ -522,6 +575,7 @@ function ExceptionsTab({ api }) {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const toast = useToast();
+  const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
   const { sorted: sortedExceptions, th, sortKey } = useSort(exceptions, {
     date: (ex) => ex.date,
@@ -541,16 +595,29 @@ function ExceptionsTab({ api }) {
 
   // Saving the same worker + date again just updates it (the server upserts),
   // so a repeat is harmless; the guard still stops a double click.
-  function save(e) {
+  async function save(e) {
     e.preventDefault();
+    const option = EXCEPTION_OPTIONS.find((o) => o.value === choice);
+    const who = workers.find((w) => String(w.id) === String(workerId))?.name || 'the worker';
+    const works = option.shifts.length ? `works ${option.label.replace(/^\w/, (c) => c.toLowerCase())}` : 'is off';
+    const existing = exceptions.find((x) => String(x.worker.id) === String(workerId) && x.date === date);
+    const ok = await confirm({
+      title: existing ? `Replace ${who}’s exception?` : `Record an exception for ${who}?`,
+      body: (
+        <>
+          <p>{who} {works} on <strong>{formatDateLabel(date)}</strong>{existing ? `, instead of ${describeException(existing.shifts).toLowerCase()}` : ''}.</p>
+          <p>Their attendance for that date (and the day either side, for overnight shifts) will be recalculated. An approved shift whose figures change is held for re-approval.</p>
+        </>
+      ),
+      confirmLabel: existing ? 'Replace' : 'Save exception'
+    });
+    if (!ok) return undefined;
+
     return guard('save', async () => {
       setError('');
-      const option = EXCEPTION_OPTIONS.find((o) => o.value === choice);
-      const who = workers.find((w) => String(w.id) === String(workerId))?.name || 'the worker';
       try {
-        await api('/api/exceptions', { method: 'PUT', body: { workerId: Number(workerId), date, shifts: option.shifts, note } });
-        const works = option.shifts.length ? `works ${option.label.replace(/^\w/, (c) => c.toLowerCase())}` : 'is off';
-        toast.success(`Exception saved: ${who} ${works} on ${formatDateLabel(date)}. Attendance for that date has been recalculated.`);
+        const result = await api('/api/exceptions', { method: 'PUT', body: { workerId: Number(workerId), date, shifts: option.shifts, note } });
+        toast.success(`Exception saved: ${who} ${works} on ${formatDateLabel(date)}.${recalcResult(result.recalculated)}`);
         setNote('');
         load();
       } catch (err) {
@@ -560,12 +627,23 @@ function ExceptionsTab({ api }) {
     });
   }
 
-  function remove(ex) {
-    if (!window.confirm(`Remove the exception for ${ex.worker.name} on ${formatDateLabel(ex.date)}? They go back to their normal schedule for that date.`)) return undefined;
+  async function remove(ex) {
+    const ok = await confirm({
+      title: `Remove ${ex.worker.name}’s exception?`,
+      body: (
+        <>
+          <p>On <strong>{formatDateLabel(ex.date)}</strong> they go back to their normal schedule ({describeException(ex.shifts).toLowerCase()} is removed).</p>
+          <p>Their attendance for that date (and the day either side) will be recalculated. An approved shift whose figures change is held for re-approval.</p>
+        </>
+      ),
+      confirmLabel: 'Remove exception',
+      danger: true
+    });
+    if (!ok) return undefined;
     return guard(`remove-${ex.id}`, async () => {
       try {
-        await api(`/api/exceptions/${ex.id}`, { method: 'DELETE' });
-        toast.success(`Exception removed: ${ex.worker.name} is back on their normal schedule for ${formatDateLabel(ex.date)}.`);
+        const result = await api(`/api/exceptions/${ex.id}`, { method: 'DELETE' });
+        toast.success(`Exception removed: ${ex.worker.name} is back on their normal schedule for ${formatDateLabel(ex.date)}.${recalcResult(result.recalculated)}`);
         load();
       } catch (err) {
         if (isAlreadyDone(err)) { toast.info(err.message); load(); return; }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useBusy, useToast } from './toast';
+import { recalcResult, useConfirm } from './confirm';
 
 function addMinutes(hhmm, minutes) {
   const [h, m] = hhmm.split(':').map(Number);
@@ -16,19 +17,38 @@ function RuleCard({ shift, canEdit, onSave }) {
   const [form, setForm] = useState(shift);
   const [error, setError] = useState('');
   const toast = useToast();
+  const confirm = useConfirm();
   const { guard, busy } = useBusy();
   const overnight = shift.endTime <= shift.startTime;
 
   useEffect(() => { setForm(shift); }, [shift]);
 
-  function save(e) {
+  async function save(e) {
     e.preventDefault();
+    const ok = await confirm({
+      title: `Change the ${shift.name} shift rules?`,
+      body: (
+        <>
+          <p>
+            {form.startTime}–{form.endTime}, check-ins from {form.earliestCheckIn}, check-outs until {form.latestCheckOut},
+            late after {form.graceMinutes} min, early-out grace {form.earlyOutGraceMinutes} min.
+          </p>
+          <p>
+            Everyone’s attendance for the last two weeks will be recalculated with the new rules — this can take a minute.
+            Approved shifts stay as approved; any whose figures change are held for re-approval.
+          </p>
+        </>
+      ),
+      confirmLabel: 'Save and recalculate'
+    });
+    if (!ok) return undefined;
+
     return guard(async () => {
       setError('');
       try {
-        await onSave(form);
+        const result = await onSave(form);
         setEditing(false);
-        toast.success(`${shift.name} shift rules saved. The last two weeks have been recalculated.`);
+        toast.success(`${shift.name} shift rules saved.${recalcResult(result?.recalculated)}`);
       } catch (err) {
         setError(err.message);
         toast.error(`Couldn’t save the ${shift.name} shift rules: ${err.message}`);
@@ -88,7 +108,7 @@ export default function ShiftRulesPage({ api, user }) {
   useEffect(() => { load(); }, [load]);
 
   async function save(shift) {
-    await api(`/api/shifts/${shift.id}`, {
+    const result = await api(`/api/shifts/${shift.id}`, {
       method: 'PUT',
       body: {
         startTime: shift.startTime,
@@ -100,6 +120,7 @@ export default function ShiftRulesPage({ api, user }) {
       }
     });
     load();
+    return result;
   }
 
   return (
