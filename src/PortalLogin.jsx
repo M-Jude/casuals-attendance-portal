@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import PasswordChecklist from './PasswordChecklist';
+import { isStrongPassword } from './passwordPolicy';
 
 // The branded full-screen card shared by sign-in and the first-sign-in
 // password change.
@@ -55,7 +57,7 @@ function LoginFrame({ title, sub, children }) {
           display: block;
           margin-bottom: 18px;
         }
-        .portal-field span {
+        .portal-field > span {
           display: block;
           font-size: 13px;
           font-weight: 500;
@@ -77,12 +79,6 @@ function LoginFrame({ title, sub, children }) {
           outline: none;
           border-color: var(--accent);
           box-shadow: 0 0 0 3px var(--accent-bg);
-        }
-        .portal-field small {
-          display: block;
-          font-size: 12px;
-          color: var(--muted);
-          margin-top: 6px;
         }
         .portal-error {
           color: var(--critical);
@@ -220,8 +216,6 @@ export default function PortalLogin({ onLogin }) {
   );
 }
 
-const MIN_PASSWORD_LENGTH = 8;
-
 // Shown instead of the portal while the account still has a password someone
 // else chose (a new account, or an HR/admin reset). The API refuses
 // everything else until this is done.
@@ -235,7 +229,7 @@ export function ChangePasswordScreen({ api, user, onChanged, onLogout }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
-    if (newPassword.length < MIN_PASSWORD_LENGTH) { setError(`Your new password must be at least ${MIN_PASSWORD_LENGTH} characters.`); return; }
+    if (!isStrongPassword(newPassword)) { setError('Your new password doesn’t meet all the requirements below it yet.'); return; }
     if (newPassword !== confirm) { setError('The new passwords don’t match.'); return; }
     if (newPassword === currentPassword) { setError('Choose a password different from the one you were given.'); return; }
 
@@ -276,10 +270,10 @@ export function ChangePasswordScreen({ api, user, onChanged, onLogout }) {
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             autoComplete="new-password"
-            minLength={MIN_PASSWORD_LENGTH}
+            aria-describedby="new-password-rules"
             required
           />
-          <small>At least {MIN_PASSWORD_LENGTH} characters.</small>
+          <PasswordChecklist password={newPassword} id="new-password-rules" />
         </label>
 
         <label className="portal-field">

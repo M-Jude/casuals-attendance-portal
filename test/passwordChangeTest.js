@@ -32,7 +32,7 @@ check('query string ignored', allowedBeforePasswordChange('/api/auth/me?x=1'));
 check('other API paths blocked', !allowedBeforePasswordChange('/api/users') && !allowedBeforePasswordChange('/api/auth/me/../../users'));
 
 async function main() {
-  users.set(1, { id: 1, email: 'new@example.com', name: 'New', role: 'hr', active: true, subcontractorName: 'A', passwordHash: await bcrypt.hash('given-pass-1', 4), mustChangePassword: true });
+  users.set(1, { id: 1, email: 'new@example.com', name: 'New', role: 'hr', active: true, subcontractorName: 'A', passwordHash: await bcrypt.hash('Given-pass-1', 4), mustChangePassword: true });
 
   const app = express();
   app.use(express.json());
@@ -51,7 +51,7 @@ async function main() {
   };
 
   try {
-    const login = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'given-pass-1' } });
+    const login = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'Given-pass-1' } });
     check('the temporary password signs in', login.status === 200 && login.body.token);
     const token = login.body.token;
 
@@ -61,27 +61,30 @@ async function main() {
     const blocked = await call('GET', '/api/attendance', { token });
     check('everything else is refused until changed', blocked.status === 403 && blocked.body.code === 'PASSWORD_CHANGE_REQUIRED');
 
-    const wrong = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'nope-nope', newPassword: 'my-own-pass' } });
+    const wrong = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'nope-nope', newPassword: 'My-own-pass!' } });
     check('wrong current password is a 400 (not a sign-out 401)', wrong.status === 400);
     check('…and changes nothing', users.get(1).mustChangePassword === true);
 
-    const short = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'given-pass-1', newPassword: 'short' } });
+    const short = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'Given-pass-1', newPassword: 'short' } });
     check('too-short new password refused', short.status === 400);
 
-    const same = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'given-pass-1', newPassword: 'given-pass-1' } });
+    const weak = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'Given-pass-1', newPassword: 'longbutweakpassword' } });
+    check('long but weak new password refused, saying what is missing', weak.status === 400 && /uppercase/.test(weak.body.error) && /special/.test(weak.body.error));
+
+    const same = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'Given-pass-1', newPassword: 'Given-pass-1' } });
     check('reusing the given password refused', same.status === 400);
 
-    const ok = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'given-pass-1', newPassword: 'my-own-pass' } });
+    const ok = await call('POST', '/api/auth/change-password', { token, body: { currentPassword: 'Given-pass-1', newPassword: 'My-own-pass!' } });
     check('valid change accepted', ok.status === 200);
     check('flag cleared', users.get(1).mustChangePassword === false);
-    check('new password stored hashed', users.get(1).passwordHash !== 'my-own-pass' && await bcrypt.compare('my-own-pass', users.get(1).passwordHash));
+    check('new password stored hashed', users.get(1).passwordHash !== 'My-own-pass!' && await bcrypt.compare('My-own-pass!', users.get(1).passwordHash));
 
     const after = await call('GET', '/api/attendance', { token });
     check('the same session now works', after.status === 200);
 
-    const oldLogin = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'given-pass-1' } });
+    const oldLogin = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'Given-pass-1' } });
     check('the temporary password no longer works', oldLogin.status === 401);
-    const newLogin = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'my-own-pass' } });
+    const newLogin = await call('POST', '/api/auth/login', { body: { email: 'new@example.com', password: 'My-own-pass!' } });
     check('the new password signs in', newLogin.status === 200);
   } finally {
     server.close();
