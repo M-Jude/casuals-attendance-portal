@@ -6,6 +6,7 @@ const { requireRole } = require('../middleware/requireRole');
 const { canApprove, escalationDueAt } = require('../sync/approvalLogic');
 const { dateStrOf } = require('../sync/scheduleResolver');
 const { normalizeDoubles } = require('../reports/doubleShift');
+const { accountNameResolver } = require('../services/accountNames');
 
 const router = express.Router();
 const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
@@ -155,8 +156,9 @@ router.get('/approvals/:id', authenticate, requireRole(...VIEWERS), async (req, 
       orderBy: [{ date: 'asc' }, { worker: { name: 'asc' } }]
     });
     await describeDoubles(rows, unit.key);
+    // Still named if the approver's account has since been deleted.
     const approver = unit.approvedById
-      ? await prisma.portalUser.findUnique({ where: { id: unit.approvedById }, select: { name: true, role: true } })
+      ? { name: (await accountNameResolver([unit.approvedById]))(unit.approvedById, unit.approvedAt) }
       : null;
     res.json({ unit: { ...described, approvedBy: approver }, rows });
   } catch (err) {

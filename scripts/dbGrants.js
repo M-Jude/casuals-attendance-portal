@@ -21,8 +21,9 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const { PrismaClient } = require('@prisma/client');
 
-// Tables the app user may only read and add to.
-const APPEND_ONLY = ['AuditLog'];
+// Tables the app user may only read and add to: the audit trail, and the
+// names of deleted accounts it (and "approved by") still refer to.
+const APPEND_ONLY = ['AuditLog', 'DeletedAccount'];
 // Prisma's own bookkeeping — the app never touches it.
 const SKIP = ['_prisma_migrations'];
 

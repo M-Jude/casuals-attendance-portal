@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ROLE_LABEL, todayEat, formatDateLabel } from './api';
 import { usePagination } from './Pagination';
 import { useSort } from './useSort';
-import { useBusy, useToast } from './toast';
+import { isAlreadyDone, useBusy, useToast } from './toast';
 import { recalcNotice, recalcResult, useConfirm } from './confirm';
 
 // Roles that never have a worker record: UCAA auditors (and the Director
@@ -51,7 +51,7 @@ function showTemporaryPassword(confirm, { email, password, emailError }) {
   });
 }
 
-function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDisable, onSaved }) {
+function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDisable, canDelete, onSaved }) {
   const [editing, setEditing] = useState(false);
   const [linkTo, setLinkTo] = useState(null);
   const [moveTo, setMoveTo] = useState('');
@@ -115,6 +115,40 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDi
       danger: true
     });
     if (ok) patch({ resetTwoStep: true }, `${who}’s two-step sign-in has been reset. They’ll set it up again at their next sign-in.`);
+  }
+
+  // Deletes only the sign-in account (and its notifications). The worker
+  // record, attendance, approvals and audit log all stay; "approved by"
+  // keeps showing the name.
+  async function deleteAccount() {
+    const ok = await confirm({
+      title: `Delete ${who}’s account?`,
+      body: (
+        <>
+          <p>This removes the sign-in account <strong>{account.email}</strong> and its notifications. They can no longer sign in, and it can’t be undone — to let them back in later you’d create a new account.</p>
+          <p><strong>Kept:</strong> {account.worker ? `their worker record (${account.worker.biostarUserId}) and ` : ''}all attendance records, approvals they made (still shown as approved by {who}), schedules, reports and the audit log.</p>
+          {isSupervisor && <p>{account.crew?.name || 'Their crew'} will have no supervisor account until you create one.</p>}
+          {isAdminAccount && <p>All System Admins will be told.</p>}
+          <p>To stop someone signing in for now but keep the account, use “Disable account” instead.</p>
+        </>
+      ),
+      confirmLabel: 'Delete account',
+      danger: true
+    });
+    if (!ok) return;
+    guard(async () => {
+      setError('');
+      try {
+        await api(`/api/users/${account.id}`, { method: 'DELETE' });
+        toast.success(`${who}’s account has been deleted. Their attendance and worker records are kept.`);
+        setEditing(false);
+        onSaved();
+      } catch (err) {
+        if (isAlreadyDone(err)) { toast.info(err.message); onSaved(); return; }
+        setError(err.message);
+        toast.error(`Couldn’t delete ${who}’s account: ${err.message}`);
+      }
+    });
   }
 
   async function toggleActive() {
@@ -229,6 +263,16 @@ function UserRow({ api, account, crews, freeWorkers, workersById, canEdit, canDi
               >
                 {account.active ? 'Disable account' : 'Re-enable account'}
               </button>
+              {canDelete && (
+                <button
+                  className="btn btn--small btn--danger"
+                  disabled={busy || !canDisable}
+                  title={!canDisable ? 'The only active System Admin can’t be deleted. Make someone else a System Admin first.' : undefined}
+                  onClick={deleteAccount}
+                >
+                  Delete account…
+                </button>
+              )}
               <button className="btn btn--link small" onClick={() => { setEditing(false); setConfirmMove(false); setError(''); }}>Close</button>
             </div>
             {error && <div className="error">{error}</div>}
@@ -398,6 +442,7 @@ export default function UsersPage({ api, user }) {
               workersById={workersById}
               canEdit={canCreate.includes(u.role) && u.id !== user.id}
               canDisable={!(u.role === 'sysadmin' && u.active && activeAdmins <= 1)}
+              canDelete={user.role === 'sysadmin' && u.id !== user.id}
               onSaved={load}
             />
           ))}

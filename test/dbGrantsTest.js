@@ -22,6 +22,8 @@ check('audit log: read and add only',
 check('audit log: never edit or delete (revoked, harmless if never granted)',
   plan.some((p) => p.optional && p.sql === "REVOKE UPDATE, DELETE ON `casuals_portal`.`AuditLog` FROM 'casuals_app'@'localhost'"));
 check('no UPDATE or DELETE grant on the audit log', !sql.some((x) => /^GRANT .*(UPDATE|DELETE).*`AuditLog`/.test(x)));
+const withDeleted = planGrants({ database: 'casuals_portal', tables: ['deletedaccount'], user: 'casuals_app', host: 'localhost' }).map((p) => p.sql);
+check('deleted-account names: read + add only too', withDeleted.includes("GRANT SELECT, INSERT ON `casuals_portal`.`deletedaccount` TO 'casuals_app'@'localhost'"));
 check('Prisma’s migrations table is left alone', !sql.some((x) => x.includes('_prisma_migrations')));
 check('nothing granted database-wide (no GRANT … ON `db`.*)', !sql.some((x) => /^GRANT .*`\.\*/.test(x)));
 check('any database-wide privileges are cleared first (they would override the audit-log limits)',
