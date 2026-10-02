@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 // An in-page "are you sure?" dialog, for changes that recalculate attendance
 // (schedules, cycles, exceptions, shift rules) and other actions worth a
 // second look. Returns a promise of true (go ahead) or false (cancelled).
+// With cancelLabel: null it's a plain notice with a single button.
 //
 //   const confirm = useConfirm();
 //   if (!(await confirm({ title, body, confirmLabel }))) return;
@@ -49,7 +50,7 @@ export function ConfirmProvider({ children }) {
             <h2 className="confirm__title" id="confirm-title">{request.title}</h2>
             <div className="confirm__body" id="confirm-body">{request.body}</div>
             <div className="confirm__actions">
-              <button className="btn" onClick={() => close(false)}>Cancel</button>
+              {request.cancelLabel !== null && <button className="btn" onClick={() => close(false)}>{request.cancelLabel || 'Cancel'}</button>}
               <button ref={confirmButton} className={`btn ${request.danger ? 'btn--danger' : 'btn--primary'}`} onClick={() => close(true)}>
                 {request.confirmLabel}
               </button>

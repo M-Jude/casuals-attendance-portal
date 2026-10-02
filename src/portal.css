@@ -1101,6 +1101,13 @@ body.no-scroll { overflow: hidden; }
   .confirm__actions .btn { flex: 1; }
 }
 
+/* A generated temporary password, shown once when its email failed. */
+.temp-password {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 22px; letter-spacing: 0.08em;
+  color: var(--text); background: var(--bg); border: 1px dashed var(--line-strong);
+  border-radius: 10px; padding: 10px 14px; text-align: center; user-select: all;
+}
+
 /* Password strength checklist (PasswordChecklist.jsx). */
 .pw-checklist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12.5px; line-height: 1.7; }
 .pw-checklist__item { color: var(--muted); }

@@ -65,7 +65,7 @@ rule('PATCH', '/api/users/:id', {
     if (body.active === false) bits.push('disabled');
     if (body.active === true) bits.push('re-enabled');
     if (body.role !== undefined) bits.push(`role set to ${ROLE_LABELS[body.role] || body.role}`);
-    if (body.password !== undefined) bits.push('password reset');
+    if (body.resetPassword === true) bits.push('new temporary password sent');
     if (typeof body.name === 'string') bits.push(`name set to "${body.name}"`);
     if (body.casualWorkerId !== undefined) bits.push(body.casualWorkerId ? `linked to ${await nameOfWorker(body.casualWorkerId)}` : 'worker link removed');
     return `Updated account ${who}${bits.length ? `: ${bits.join(', ')}` : ''}`;
