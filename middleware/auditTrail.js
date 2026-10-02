@@ -123,6 +123,11 @@ rule('PUT', '/api/shifts/:id', {
   summary: async ({ params, body }) => `Changed the ${await nameOfShift(params.id)} shift rules (${Object.keys(body).join(', ')})`
 });
 
+rule('PUT', '/api/settings/pay-rates', {
+  category: 'settings', action: 'settings.pay-rates',
+  summary: ({ body }) => `Set pay rates: Day ${body.dayShift ?? 'open'}, Night ${body.nightShift ?? 'open'} ${String(body.currency || 'UGX').toUpperCase()} per shift`
+});
+
 // ------------------------------------------------------------------ notifications
 
 rule('POST', '/api/notifications/read-all', { category: 'notification', action: 'notification.read-all', summary: () => 'Marked all notifications as read' });

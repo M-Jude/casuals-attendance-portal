@@ -7,6 +7,7 @@ const { syncAttendance } = require('./sync/attendanceSync');
 const { runApprovalJobs } = require('./sync/approvalJobs');
 const { runProfiling } = require('./sync/profilingJob');
 const { recomputeLookback } = require('./services/recompute');
+const { runWeeklyDigest } = require('./sync/weeklyDigest');
 const { runLiveSync, withSyncLock, markFullSync, markFullSyncFailed } = require('./services/liveSync');
 
 const app = express();
@@ -40,6 +41,7 @@ app.use('/api', require('./routes/approvals'));            // shift approvals
 app.use('/api', require('./routes/notifications'));        // in-app notifications
 app.use('/api', require('./routes/audit'));                // audit log (System Admin, Auditor)
 app.use('/api', require('./routes/system'));               // GET /system/status (System Admin, Auditor)
+app.use('/api', require('./routes/overview'));             // GET /overview, pay rates (Director, Finance, HR, System Admin, Auditor)
 
 // In production the built React app (`npm run build` → dist/) is served from
 // here too, so the portal and API share one origin. In development Vite
@@ -98,3 +100,7 @@ if (LIVE_SYNC_MINUTES > 0) {
 
 // Pattern profiling once a day, after the night shift's punches are in.
 cron.schedule('30 3 * * *', () => { runProfiling().catch(logFailure('Pattern profiling')); }, EAT);
+
+// The Director's weekly attendance digest, Monday 07:00 — after Sunday's
+// night shift has ended and been synced.
+cron.schedule('0 7 * * 1', () => { runWeeklyDigest().catch(logFailure('Weekly digest')); }, EAT);

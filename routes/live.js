@@ -14,7 +14,7 @@ const dateOnly = (d) => new Date(`${d}T00:00:00.000Z`);
 // A supervisor sees their own crew; HR, the Admin Assistant and the System
 // Admin pick any crew. The page polls this every 30 seconds; the server
 // pulls fresh badges from BioStar every couple of minutes (services/liveSync).
-router.get('/live', authenticate, requireRole('supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor'), async (req, res) => {
+router.get('/live', authenticate, requireRole('supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor', 'director'), async (req, res) => {
   try {
     const sub = req.user.subcontractorName;
     const crews = await prisma.crew.findMany({ where: { subcontractorName: sub }, include: { rotations: true }, orderBy: { name: 'asc' } });

@@ -287,6 +287,18 @@ model CrewCycleProposal {
 // who did it, when, from which IP address and device. The user's details are
 // copied in rather than linked, so an entry reads the same after the account
 // is renamed or removed. Rows are insert-only; nothing updates or deletes them.
+// Portal-wide settings set in the portal (not .env), one row per key per
+// subcontractor — e.g. "pay-rates": { currency, dayShift, nightShift }.
+model Setting {
+  subcontractorName String
+  key               String
+  value             Json
+  updatedById       Int?
+  updatedAt         DateTime @updatedAt
+
+  @@id([subcontractorName, key])
+}
+
 model AuditLog {
   id                Int      @id @default(autoincrement())
   createdAt         DateTime @default(now())

@@ -9,10 +9,10 @@ const { normalizeDoubles } = require('../reports/doubleShift');
 
 const router = express.Router();
 const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
-// Who may look at batches: the approvers, plus the System Admin and the
-// Auditor, who see every batch (unitScope gives roles it doesn't name
-// everything) but can't approve: canApprove refuses them.
-const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor'];
+// Who may look at batches: the approvers, plus the System Admin, the Auditor
+// and the Director, who see every batch (unitScope gives roles it doesn't
+// name everything) but can't approve: canApprove refuses them.
+const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor', 'director'];
 const MAX_COMMENT = 2000;
 
 // Which batches a user sees under "my approvals":

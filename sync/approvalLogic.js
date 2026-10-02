@@ -125,6 +125,7 @@ function isEscalationDue(unit, now) {
 function canApprove(user, unit, now) {
   if (unit.status === 'approved') return { ok: false, reason: 'Already approved.' };
   if (user.role === 'auditor') return { ok: false, reason: 'Auditors can view approvals but not approve them.' };
+  if (user.role === 'director') return { ok: false, reason: 'Directors can view approvals but not approve them.' };
   // Approving attendance is a payroll decision, not an IT one: System Admins
   // (UCAA ICT) can see every batch but approving belongs to supervisors, HR
   // and the Admin Assistant.

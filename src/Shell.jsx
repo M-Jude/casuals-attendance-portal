@@ -9,6 +9,7 @@ import MyAttendancePage from './MyAttendancePage';
 import AuditLogsPage from './AuditLogsPage';
 import LivePage from './LivePage';
 import SystemStatusPage from './SystemStatusPage';
+import OverviewPage from './OverviewPage';
 import NotificationsBell from './NotificationsBell';
 import { ROLE_LABEL, isReadOnly } from './api';
 import Icon from './icons';
@@ -16,18 +17,20 @@ import ErrorBoundary from './ErrorBoundary';
 import useCardTables from './useCardTables';
 import { useInstallPrompt, useOnline } from './pwa';
 
-const ALL = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor'];
+const ALL = ['sysadmin', 'hr', 'admin_assistant', 'finance', 'supervisor', 'auditor', 'director'];
 
 // What each role sees in the navigation. The API enforces the same rules —
 // this only hides what someone can't use. The Auditor sees every page but
 // changes nothing (the pages hide their editing controls for read-only
 // roles, and the API refuses any change from them).
 const NAV = [
+  // The month at a glance — the Director's home page.
+  { page: 'overview', label: 'Overview', icon: 'reports', section: 'Workspace', roles: ['director', 'finance', 'hr', 'sysadmin', 'auditor'] },
   { page: 'attendance', label: 'Attendance', icon: 'attendance', section: 'Workspace', roles: ALL },
-  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor'] },
+  { page: 'live', label: 'Live', icon: 'live', section: 'Workspace', roles: ['supervisor', 'sysadmin', 'hr', 'admin_assistant', 'auditor', 'director'] },
   // Only for accounts linked to a worker record (never the Director role).
   { page: 'mine', label: 'My attendance', short: 'My shifts', icon: 'me', section: 'Workspace', roles: ALL, needsWorker: true },
-  { page: 'approvals', label: 'Approvals', icon: 'approvals', section: 'Workspace', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'] },
+  { page: 'approvals', label: 'Approvals', icon: 'approvals', section: 'Workspace', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor', 'director'] },
   { page: 'reports', label: 'Reports', icon: 'reports', section: 'Workspace', roles: ALL },
   { page: 'schedules', label: 'Schedules', icon: 'schedules', section: 'Setup', roles: ['sysadmin', 'hr', 'admin_assistant', 'supervisor', 'auditor'] },
   { page: 'rules', label: 'Shift rules', icon: 'rules', section: 'Setup', roles: ALL },
@@ -52,7 +55,7 @@ function todayLabel() {
 // notification emails open the right place.
 function readLocation() {
   const params = new URLSearchParams(window.location.search);
-  return { page: params.get('page') || 'attendance', tab: params.get('tab') || null };
+  return { page: params.get('page') || null, tab: params.get('tab') || null };
 }
 
 export default function Shell({ token, user, api, onLogout }) {
@@ -60,7 +63,9 @@ export default function Shell({ token, user, api, onLogout }) {
   const [location, setLocation] = useState(readLocation);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false); // the More sheet on phones
-  const page = nav.some((n) => n.page === location.page) ? location.page : 'attendance';
+  // Directors land on the month overview; everyone else on Attendance.
+  const homePage = user.role === 'director' ? 'overview' : 'attendance';
+  const page = nav.some((n) => n.page === location.page) ? location.page : homePage;
   const mainRef = useRef(null);
   useCardTables(mainRef);
   const online = useOnline();
@@ -195,6 +200,7 @@ export default function Shell({ token, user, api, onLogout }) {
       {page === 'audit' && <AuditLogsPage api={api} token={token} user={user} />}
       {page === 'live' && <LivePage api={api} token={token} user={user} />}
       {page === 'status' && <SystemStatusPage api={api} user={user} />}
+      {page === 'overview' && <OverviewPage api={api} user={user} />}
         </ErrorBoundary>
         </div>
         </main>
