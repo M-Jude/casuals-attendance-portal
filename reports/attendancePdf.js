@@ -720,7 +720,7 @@ function drawNotes(doc, cur, shifts) {
     ['Double shift', 'Two shifts worked back to back. A Day and that evening\'s Night is one line, "Day + Night", from the Day\'s clock-in to the Night\'s clock-out (the Night stays on the Day\'s date even when it ends the next morning); it counts as 2 shifts and 1 double shift. A Night and the next morning\'s Day stay two lines, each on its own date, marked "double". Each shift is approved by its own crew\'s supervisor.'],
     ['Flags', `"Multiple punches" means extra badges between the check-in and check-out - worth a manual look. "Implied time" is a double shift with no badge at the changeover, split at the scheduled handover. "Unscheduled" shifts were worked outside the worker's schedule.`],
     ['Hours', 'Check-out minus check-in. No meal or break deduction and no overtime rules are applied.'],
-    ['Approval', `Records are approved by the crew's supervisor after each shift (escalated to HR and the Admin Assistant after 48 hours), or by HR at month end for permanent staff. Approved records are locked; later changes show as "Changed after approval" until re-approved.`],
+    ['Approval', `Records are approved by the crew's supervisor after each shift (escalated to HR and the Admin Assistant after 48 hours), or by HR after each shift for permanent staff (escalated to the Admin Assistant after 48 hours). Approved records are locked; later changes show as "Changed after approval" until re-approved.`],
     ['Times', `All times are East Africa Time (EAT, UTC+3). Shifts: ${shiftLine}. Night shifts are dated by the evening they start.`]
   ];
 

@@ -312,7 +312,7 @@ job only covers the recent lookback window.
 | Role | Sees | Does |
 |---|---|---|
 | System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Does not approve attendance** (separation of duties). Signs in with password + authenticator code |
-| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff monthly and escalated shifts |
+| HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff's shifts and escalated shifts |
 
 System Admin safeguards:
 - **Two-step sign-in**: a System Admin's password alone never gives a
@@ -369,8 +369,12 @@ names the auditor.
   covering that shift go to the supervisor of the crew on duty.
 - Unapproved 48 hours after that, it escalates to HR and the Admin
   Assistant (in-app + email), who can then approve it.
-- Permanent Day/Night staff (and anyone not on a crew) are batched per
-  month (`hr-month`) for HR to approve after month end.
+- Permanent Day/Night staff (and anyone not on a crew) are batched the same
+  way, per shift per date (`hr-shift`): HR gets an in-app reminder when the
+  shift ends and approves it; unapproved 48 hours later it escalates and
+  the Admin Assistant can approve it too. Dates before 1 Oct 2026
+  (`HR_DAILY_FROM` in `sync/approvalLogic.js`) stay in the monthly batches
+  (`hr-month`) they were approved in.
 - Approved rows are locked. A later recomputation that would change one (a
   late-synced punch, a schedule fix) parks the new values in
   `pendingValues`, flags `changedAfterApproval`, reopens the batch and

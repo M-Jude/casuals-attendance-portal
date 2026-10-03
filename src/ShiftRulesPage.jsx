@@ -154,7 +154,7 @@ export default function ShiftRulesPage({ api, user }) {
         <ul className="page__hint" style={{ paddingLeft: 18, margin: 0 }}>
           <li>Each crew’s supervisor approves their crew’s shift once it ends, with optional comments.</li>
           <li>A shift left unapproved for 48 hours is escalated to HR and the Admin Assistant (in the portal and by email).</li>
-          <li>Permanent Day and Night staff are approved by HR at the end of each month.</li>
+          <li>Permanent Day and Night staff (and anyone not on a crew) are approved by HR shift by shift, once each shift ends. Left unapproved for 48 hours, the Admin Assistant can approve them too.</li>
           <li>Finance sees approved records only. Approved records are locked; if a later punch changes one, it is flagged and needs re-approval.</li>
         </ul>
       </div>

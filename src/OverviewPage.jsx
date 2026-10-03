@@ -103,11 +103,11 @@ export default function OverviewPage({ api }) {
           <div className="cards">
             <div className="card">
               <h3 className="card__title">Approvals</h3>
-              <p className="card__sub">Batches due this month (each crew’s shift, plus HR’s monthly batch for permanent staff).</p>
+              <p className="card__sub">Batches due this month (each crew’s shift, and each permanent-staff shift HR approves).</p>
               <div className="status__row"><span className="status__label">Approved</span><span>{num(o.approvals.approved)} of {num(o.approvals.batches)}</span></div>
               <div className="status__row"><span className="status__label">Approved on time (within 48 h)</span><span>{o.approvals.onTimeRate === null ? '—' : `${o.approvals.onTimeRate}%`}</span></div>
               <div className="status__row"><span className="status__label">Still waiting</span><span>{num(o.approvals.waiting)}</span></div>
-              <div className="status__row"><span className="status__label">Escalated to HR</span><span>{num(o.approvals.escalated)}</span></div>
+              <div className="status__row"><span className="status__label">Escalated</span><span>{num(o.approvals.escalated)}</span></div>
               <div className="status__row"><span className="status__label">Changed after approval</span><span>{num(t.changedAfterApproval)} shift{t.changedAfterApproval === 1 ? '' : 's'}</span></div>
               <div className="status__row"><span className="status__label">Shifts approved so far</span><span>{num(t.approvedShifts)} of {num(t.shiftsWorked)}</span></div>
             </div>

@@ -2,7 +2,7 @@ const { Prisma } = require('@prisma/client');
 const prisma = require('../prismaClient');
 const { classifyWorker, addDaysStr, eatToUtcMs } = require('./shiftEngine');
 const { buildResolver, startAtFirstPunch } = require('./scheduleResolver');
-const { planReconcile, sameAttendance, crewUnitKey, hrUnitKey, unitDueAt } = require('./approvalLogic');
+const { planReconcile, sameAttendance, crewUnitKey, hrUnitKey, hrUnitKind, unitDueAt } = require('./approvalLogic');
 
 function dateOnly(dateStr) {
   return new Date(`${dateStr}T00:00:00.000Z`);
@@ -35,7 +35,7 @@ function leanFromHistory(completeRows, dateStr) {
 // Which approval batch a row belongs to:
 // (A worker with no confirmed schedule is routed by their profiled
 // pattern, the same one their shifts were classified against.)
-//   - permanent Day/Night workers → HR's monthly batch
+//   - permanent Day/Night workers → HR's batch for that shift
 //   - a crew worker on their own crew's shift → their crew's supervisor
 //   - anyone else on a shift (a swap, cover or unscheduled worker) → the
 //     supervisor of the crew rostered on that shift that date
@@ -154,18 +154,19 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     for (const r of rows) {
       const shift = shiftsByName[r.shiftName];
       const approvalCrewId = approvalCrewFor({ resolver, workerId: worker.id, dateStr: r.date, shiftName: r.shiftName, tenantCrewIds });
-      const approvalKey = approvalCrewId ? crewUnitKey(approvalCrewId, r.date, shift.id) : hrUnitKey(worker.subcontractorName, r.date);
+      const kind = approvalCrewId ? 'crew-shift' : hrUnitKind(r.date);
+      const approvalKey = approvalCrewId ? crewUnitKey(approvalCrewId, r.date, shift.id) : hrUnitKey(worker.subcontractorName, r.date, shift.id);
 
       if (!units.has(approvalKey)) {
-        units.set(approvalKey, approvalCrewId
+        units.set(approvalKey, kind === 'hr-month'
           ? {
-              key: approvalKey, kind: 'crew-shift', subcontractorName: worker.subcontractorName,
-              date: dateOnly(r.date), shiftId: shift.id, crewId: approvalCrewId,
-              dueAt: unitDueAt({ kind: 'crew-shift', dateStr: r.date, shift })
+              key: approvalKey, kind, subcontractorName: worker.subcontractorName,
+              month: r.date.slice(0, 7), dueAt: unitDueAt({ kind, month: r.date.slice(0, 7) })
             }
           : {
-              key: approvalKey, kind: 'hr-month', subcontractorName: worker.subcontractorName,
-              month: r.date.slice(0, 7), dueAt: unitDueAt({ kind: 'hr-month', month: r.date.slice(0, 7) })
+              key: approvalKey, kind, subcontractorName: worker.subcontractorName,
+              date: dateOnly(r.date), shiftId: shift.id, crewId: approvalCrewId,
+              dueAt: unitDueAt({ kind, dateStr: r.date, shift })
             });
       }
 
@@ -237,6 +238,15 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
         });
       } else if (unit.status === 'reopened' && outstanding === 0) {
         await tx.approvalUnit.update({ where: { key }, data: { status: 'approved', reopenedAt: null } });
+      }
+    }
+
+    // A batch that was never approved and whose rows have all moved to
+    // another batch (or gone) is dropped rather than left empty.
+    const leftKeys = [...new Set(existing.map((e) => e.approvalKey))].filter((k) => !units.has(k));
+    for (const key of leftKeys) {
+      if (await tx.dailyAttendanceSummary.count({ where: { approvalKey: key } }) === 0) {
+        await tx.approvalUnit.deleteMany({ where: { key, status: 'pending' } });
       }
     }
   }, { timeout: 120000, maxWait: 20000 });

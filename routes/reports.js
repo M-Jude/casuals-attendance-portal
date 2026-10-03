@@ -8,6 +8,7 @@ const { renderCsv } = require('../reports/renderCsv');
 const { renderXlsx } = require('../reports/renderXlsx');
 const { renderPdf } = require('../reports/renderPdf');
 const { dateStrOf, buildResolver } = require('../sync/scheduleResolver');
+const { unitLabel } = require('../sync/approvalLogic');
 const { accountNameResolver } = require('../services/accountNames');
 
 const router = express.Router();
@@ -77,7 +78,7 @@ async function loadApprovalUnits(user, period) {
   const inRange = { gte: new Date(`${period.from}T00:00:00Z`), lte: new Date(`${period.to}T00:00:00Z`) };
   const where = { subcontractorName: user.subcontractorName };
   if (user.role === 'supervisor') Object.assign(where, { kind: 'crew-shift', crewId: user.crewId ?? -1, date: inRange });
-  else where.OR = [{ kind: 'crew-shift', date: inRange }, { kind: 'hr-month', month: { in: [...months] } }];
+  else where.OR = [{ kind: { in: ['crew-shift', 'hr-shift'] }, date: inRange }, { kind: 'hr-month', month: { in: [...months] } }];
 
   const units = await prisma.approvalUnit.findMany({ where });
   if (units.length === 0) return [];
@@ -93,9 +94,7 @@ async function loadApprovalUnits(user, period) {
   const count = new Map(counts.map((c) => [c.approvalKey, c._count._all]));
   return units.map((u) => ({
     ...u,
-    label: u.kind === 'crew-shift'
-      ? `${crewName.get(u.crewId) || 'Crew'} · ${shiftName.get(u.shiftId) || ''} · ${dateStrOf(u.date)}`
-      : `Permanent staff · ${u.month}`,
+    label: unitLabel(u, crewName.get(u.crewId), shiftName.get(u.shiftId)),
     rows: count.get(u.key) || 0,
     approvedByName: approverName(u.approvedById, u.approvedAt)
   }));

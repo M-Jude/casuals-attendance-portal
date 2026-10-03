@@ -1,11 +1,12 @@
 // Approval reminders and escalation — run on a schedule from server.js.
 //   - When a crew's shift ends, its supervisor is told it's ready (in-app).
-//   - When a month ends, HR is told the permanent-staff month is ready.
-//   - 48h after a crew shift became approvable, if still not approved, it
+//   - When a permanent-staff shift ends, HR is told it's ready (in-app); an
+//     older monthly batch, when its month ends (in-app + email).
+//   - 48h after a shift became approvable, if still not approved, it
 //     escalates to HR and the Admin Assistant (in-app + email).
 
 const prisma = require('../prismaClient');
-const { isEscalationDue } = require('./approvalLogic');
+const { isEscalationDue, unitLabel } = require('./approvalLogic');
 const { dateStrOf } = require('./scheduleResolver');
 const { notifyUsers, usersWithRoles } = require('../services/notify');
 
@@ -17,7 +18,7 @@ const MAX_LISTED = 15;
 function isTracked(unit) {
   const from = process.env.APPROVAL_TRACKING_FROM;
   if (!from) return true;
-  return unit.kind === 'crew-shift' ? dateStrOf(unit.date) >= from : unit.month >= from.slice(0, 7);
+  return unit.kind === 'hr-month' ? unit.month >= from.slice(0, 7) : dateStrOf(unit.date) >= from;
 }
 
 function listLines(labels) {
@@ -45,9 +46,7 @@ async function runApprovalJobs(now = Date.now()) {
   const [crews, shifts] = await Promise.all([prisma.crew.findMany(), prisma.shift.findMany()]);
   const crewName = new Map(crews.map((c) => [c.id, c.name]));
   const shiftName = new Map(shifts.map((s) => [s.id, s.name]));
-  const label = (u) => (u.kind === 'crew-shift'
-    ? `${crewName.get(u.crewId) || 'Crew'} · ${shiftName.get(u.shiftId)} shift · ${dateStrOf(u.date)}`
-    : `Permanent staff · ${u.month}`);
+  const label = (u) => unitLabel(u, crewName.get(u.crewId), shiftName.get(u.shiftId));
 
   let reminded = 0;
   let escalated = 0;
@@ -66,7 +65,20 @@ async function runApprovalJobs(now = Date.now()) {
     reminded += list.length;
   }
 
-  // Month-end reminder to HR for permanent-Day/Night workers.
+  // Ready-for-approval reminders to HR for permanent-staff shifts.
+  const dueHrShifts = units.filter((u) => u.kind === 'hr-shift' && !u.dueNotifiedAt);
+  for (const [tenant, list] of groupBy(dueHrShifts, (u) => u.subcontractorName)) {
+    await notifyUsers(await usersWithRoles(['hr'], tenant), {
+      type: 'approval-due',
+      title: `${list.length} permanent-staff shift${list.length === 1 ? '' : 's'} ready for your approval`,
+      body: `These shifts have ended and are waiting for your approval:\n${listLines(list.map(label))}\n\nUnapproved shifts escalate to the Admin Assistant after 48 hours.`,
+      link: '/?page=approvals'
+    });
+    await prisma.approvalUnit.updateMany({ where: { id: { in: list.map((u) => u.id) } }, data: { dueNotifiedAt: new Date(now) } });
+    reminded += list.length;
+  }
+
+  // Month-end reminder to HR for the older monthly batches.
   const dueMonths = units.filter((u) => u.kind === 'hr-month' && !u.dueNotifiedAt);
   for (const [tenant, list] of groupBy(dueMonths, (u) => u.subcontractorName)) {
     await notifyUsers(await usersWithRoles(['hr'], tenant), {
@@ -86,7 +98,7 @@ async function runApprovalJobs(now = Date.now()) {
     await notifyUsers(await usersWithRoles(['hr', 'admin_assistant'], tenant), {
       type: 'approval-escalated',
       title: `${list.length} shift approval${list.length === 1 ? '' : 's'} overdue — escalated to you`,
-      body: `These shifts were not approved by their supervisor within 48 hours and are now yours to approve:\n${listLines(list.map(label))}`,
+      body: `These shifts were not approved within 48 hours and are now yours to approve:\n${listLines(list.map(label))}`,
       link: '/?page=approvals',
       email: true
     });

@@ -50,7 +50,7 @@ const withProfiles = buildResolver({
 check('Suggested: unassigned worker judged against their profiled permanent Day, marked suggested', withProfiles.expectedFor(20)('2026-09-10').shifts[0] === 'Day' && withProfiles.expectedFor(20)('2026-09-10').source === 'suggested');
 check('Suggested: worker with no schedule rows follows their profiled crew', withProfiles.expectedFor(21)('2026-09-03').shifts[0] === 'Day' && withProfiles.expectedFor(21)('2026-09-03').source === 'suggested');
 check('Suggested: a confirmed schedule always wins over the profile', withProfiles.expectedFor(10)('2026-09-01').shifts[0] === 'Day' && withProfiles.expectedFor(10)('2026-09-01').source === 'schedule');
-check('Suggested permanent Day worker → HR monthly approval', approvalCrewFor({ resolver: withProfiles, workerId: 20, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: [1, 2] }) === null);
+check('Suggested permanent Day worker → HR approval', approvalCrewFor({ resolver: withProfiles, workerId: 20, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: [1, 2] }) === null);
 
 // Approval routing.
 const crewIds = [1, 2];

@@ -2,6 +2,7 @@ const prisma = require('../prismaClient');
 const { record, sanitize } = require('../services/audit');
 const { ROLE_LABELS } = require('./requireRole');
 const { REPORT_TYPES } = require('../reports/reportCatalog');
+const { unitLabel } = require('../sync/approvalLogic');
 
 // Writes an audit-log entry for every API request that changes something,
 // downloads a file or previews a report — once the response has gone out, so
@@ -34,9 +35,8 @@ const nameOfShift = async (id) => (await prisma.shift.findUnique({ where: { id: 
 async function nameOfUnit(id) {
   const u = await prisma.approvalUnit.findUnique({ where: { id: Number(id) } });
   if (!u) return `batch #${id}`;
-  if (u.kind !== 'crew-shift') return `Permanent staff · ${u.month}`;
-  const [crew, shift] = await Promise.all([u.crewId ? nameOfCrew(u.crewId) : 'Crew', u.shiftId ? nameOfShift(u.shiftId) : '']);
-  return `${crew} · ${shift} · ${u.date.toISOString().slice(0, 10)}`;
+  const [crew, shift] = await Promise.all([u.crewId ? nameOfCrew(u.crewId) : null, u.shiftId ? nameOfShift(u.shiftId) : null]);
+  return unitLabel(u, crew, shift);
 }
 const reportName = (id) => REPORT_TYPES.find((t) => t.id === id)?.name || id;
 const periodText = (q) => (q.from && q.to ? `${q.from} to ${q.to}` : [q.period, q.date || q.month || q.weekFrom].filter(Boolean).join(' '));

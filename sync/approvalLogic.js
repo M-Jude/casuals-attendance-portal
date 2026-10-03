@@ -93,14 +93,35 @@ function crewUnitKey(crewId, dateStr, shiftId) {
   return `crew:${crewId}:${dateStr}:${shiftId}`;
 }
 
-function hrUnitKey(subcontractorName, dateStr) {
-  return `hr:${subcontractorName}:${dateStr.slice(0, 7)}`;
+// HR's batches (permanent staff and anyone not on a crew): from
+// HR_DAILY_FROM, one per shift per date (hr-shift), like a crew's; before
+// it, one per month (hr-month). The cutover is fixed so a recompute of older
+// dates keeps their rows in the monthly batch they were approved in.
+const HR_DAILY_FROM = '2026-10-01';
+
+function hrUnitKind(dateStr) {
+  return dateStr < HR_DAILY_FROM ? 'hr-month' : 'hr-shift';
 }
 
-// When an approval unit becomes approvable: a crew shift once the shift's
-// scheduled end has passed; an HR month on the first day of the next month.
+function hrUnitKey(subcontractorName, dateStr, shiftId) {
+  return hrUnitKind(dateStr) === 'hr-month'
+    ? `hr:${subcontractorName}:${dateStr.slice(0, 7)}`
+    : `hr:${subcontractorName}:${dateStr}:${shiftId}`;
+}
+
+// A batch's name, e.g. "Crew A · Day · 2026-10-02",
+// "Permanent staff · Night · 2026-10-02" or "Permanent staff · 2026-09".
+function unitLabel(unit, crewName, shiftName) {
+  if (unit.kind === 'hr-month') return `Permanent staff · ${unit.month}`;
+  const who = unit.kind === 'crew-shift' ? crewName || 'Crew' : 'Permanent staff';
+  return `${who} · ${shiftName || ''} · ${new Date(unit.date).toISOString().slice(0, 10)}`;
+}
+
+// When an approval unit becomes approvable: a crew or HR shift once the
+// shift's scheduled end has passed; an HR month on the first day of the next
+// month.
 function unitDueAt({ kind, dateStr, shift, month }) {
-  if (kind === 'crew-shift') return new Date(shiftGeometry(shift, dateStr).end);
+  if (kind === 'crew-shift' || kind === 'hr-shift') return new Date(shiftGeometry(shift, dateStr).end);
   const [y, m] = month.split('-').map(Number);
   const next = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
   return new Date(eatToUtcMs(next, '00:00'));
@@ -114,12 +135,14 @@ function escalationDueAt(unit) {
 }
 
 function isEscalationDue(unit, now) {
-  return unit.kind === 'crew-shift' && unit.status !== 'approved' && !unit.escalatedAt && now >= escalationDueAt(unit).getTime();
+  return (unit.kind === 'crew-shift' || unit.kind === 'hr-shift') && unit.status !== 'approved' && !unit.escalatedAt && now >= escalationDueAt(unit).getTime();
 }
 
 // Who may approve a unit right now:
 //   crew-shift — the crew's supervisor once the shift has ended; HR or the
 //                Admin Assistant once it has been escalated
+//   hr-shift   — HR once the shift has ended; the Admin Assistant too once
+//                it has been escalated
 //   hr-month   — HR once the month has ended
 //   sysadmin   — always (super user)
 function canApprove(user, unit, now) {
@@ -138,6 +161,11 @@ function canApprove(user, unit, now) {
     if ((user.role === 'hr' || user.role === 'admin_assistant') && unit.escalatedAt) return { ok: true };
     return { ok: false, reason: 'Only this crew’s supervisor can approve, or HR / Admin Assistant once escalated.' };
   }
+  if (unit.kind === 'hr-shift') {
+    if (user.role === 'hr') return due ? { ok: true } : { ok: false, reason: 'This shift has not ended yet.' };
+    if (user.role === 'admin_assistant' && unit.escalatedAt) return { ok: true };
+    return { ok: false, reason: 'Only HR can approve permanent staff, or the Admin Assistant once escalated.' };
+  }
   if (unit.kind === 'hr-month' && user.role === 'hr') {
     return due ? { ok: true } : { ok: false, reason: 'The month has not ended yet.' };
   }
@@ -150,6 +178,8 @@ module.exports = {
   sameAttendance,
   crewUnitKey,
   hrUnitKey,
+  hrUnitKind,
+  unitLabel,
   unitDueAt,
   escalationDueAt,
   isEscalationDue,
