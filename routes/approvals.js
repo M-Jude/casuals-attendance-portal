@@ -3,7 +3,7 @@ const { Prisma } = require('@prisma/client');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
-const { canApprove, escalationDueAt } = require('../sync/approvalLogic');
+const { canApprove, escalationDueAt, unitLabel } = require('../sync/approvalLogic');
 const { dateStrOf } = require('../sync/scheduleResolver');
 const { normalizeDoubles } = require('../reports/doubleShift');
 const { accountNameResolver } = require('../services/accountNames');
@@ -18,15 +18,15 @@ const MAX_COMMENT = 2000;
 
 // Which batches a user sees under "my approvals":
 //   supervisor      — their crew's shifts
-//   hr              — escalated crew shifts + the permanent-Day months
-//   admin_assistant — escalated crew shifts
+//   hr              — permanent staff's shifts (and older months) + escalated crew shifts
+//   admin_assistant — escalated crew and permanent-staff shifts
 //   sysadmin        — everything
 function unitScope(user, scope) {
   const where = { subcontractorName: user.subcontractorName };
   if (scope === 'all' && ['sysadmin', 'hr', 'admin_assistant'].includes(user.role)) return where;
   if (user.role === 'supervisor') return { ...where, kind: 'crew-shift', crewId: user.crewId ?? -1 };
-  if (user.role === 'hr') return { ...where, OR: [{ kind: 'hr-month' }, { escalatedAt: { not: null } }] };
-  if (user.role === 'admin_assistant') return { ...where, kind: 'crew-shift', escalatedAt: { not: null } };
+  if (user.role === 'hr') return { ...where, OR: [{ kind: { in: ['hr-shift', 'hr-month'] } }, { escalatedAt: { not: null } }] };
+  if (user.role === 'admin_assistant') return { ...where, escalatedAt: { not: null } };
   return where;
 }
 
@@ -59,15 +59,13 @@ async function describeUnits(units, user) {
     return {
       id: u.id,
       kind: u.kind,
-      label: u.kind === 'crew-shift'
-        ? `${crewName.get(u.crewId) || 'Crew'} · ${shiftName.get(u.shiftId) || ''} · ${dateStrOf(u.date)}`
-        : `Permanent staff · ${u.month}`,
+      label: unitLabel(u, crewName.get(u.crewId), shiftName.get(u.shiftId)),
       crewName: crewName.get(u.crewId) || null,
       shiftName: shiftName.get(u.shiftId) || null,
       date: u.date ? dateStrOf(u.date) : null,
       month: u.month,
       dueAt: u.dueAt,
-      escalatesAt: u.kind === 'crew-shift' && u.status !== 'approved' ? escalationDueAt(u) : null,
+      escalatesAt: u.kind !== 'hr-month' && u.status !== 'approved' ? escalationDueAt(u) : null,
       status: u.status,
       open: now < new Date(u.dueAt).getTime(),
       escalatedAt: u.escalatedAt,

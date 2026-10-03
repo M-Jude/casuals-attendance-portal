@@ -921,7 +921,7 @@ function buildApprovals(ctx, units) {
   };
   const out = [...units].sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt)).map((u) => ({
     batch: u.label,
-    kind: u.kind === 'crew-shift' ? 'Crew shift' : 'HR month',
+    kind: { 'crew-shift': 'Crew shift', 'hr-shift': 'HR shift' }[u.kind] || 'HR month',
     state: stateOf(u),
     records: u.rows,
     dueAt: u.dueAt,
@@ -936,7 +936,7 @@ function buildApprovals(ctx, units) {
   return {
     title: 'Approval status report',
     kpis: [
-      { label: 'Batches', value: String(out.length), sub: 'crew shifts and HR months', tone: 'navy' },
+      { label: 'Batches', value: String(out.length), sub: 'crew and HR batches', tone: 'navy' },
       { label: 'Approved', value: String(count('Approved')), sub: `${pctOf(count('Approved'), out.length) ?? 0}% of batches`, tone: 'ok' },
       { label: 'Awaiting approval', value: String(count('Awaiting approval') + count('Changed - re-approve')), sub: 'past due, not escalated yet', tone: 'warn' },
       { label: 'Escalated', value: String(count('Escalated')), sub: 'unapproved after 48 hours', tone: 'critical' },

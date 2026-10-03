@@ -39,9 +39,9 @@ model AttendanceLog {
 // Portal accounts. Roles (see middleware/requireRole.js for what each can do):
 //   sysadmin        — super user: all data, all settings, any account
 //   hr              — creates supervisor/finance/admin_assistant accounts,
-//                     approves permanent-Day workers monthly and escalations,
+//                     approves permanent staff's shifts and escalations,
 //                     reviews worker pattern changes
-//   admin_assistant — sees everything, approves escalated shifts
+//   admin_assistant — sees everything, approves escalated shifts (crew or HR)
 //   finance         — sees APPROVED records only
 //   supervisor      — leads one crew (crewId) and approves its shifts
 model PortalUser {
@@ -138,7 +138,7 @@ model CrewRotation {
 
 // Which schedule a worker follows, effective-dated like CrewRotation.
 //   crew        — follows crewId's rotation
-//   fixed-day   — permanent Day (HR approves their records monthly)
+//   fixed-day   — permanent Day (HR approves their records shift by shift)
 //   fixed-night — permanent Night (likewise)
 //   unassigned  — no schedule; punches are classified by clock time and
 //                 flagged "unscheduled"
@@ -201,7 +201,7 @@ model DailyAttendanceSummary {
   hasMultiplePunches   Boolean      @default(false)
   punchIds             Json? // AttendanceLog ids this shift captured
   approvalKey          String
-  approvalCrewId       Int? // crew whose supervisor approves; null = HR monthly
+  approvalCrewId       Int? // crew whose supervisor approves; null = HR
   supervisorComment    String?      @db.Text
   approvedAt           DateTime?
   approvedById         Int?
@@ -218,8 +218,11 @@ model DailyAttendanceSummary {
 //   crew-shift — one crew's Day or Night shift on one date; approved by the
 //                crew's supervisor after the shift ends, escalated to HR and
 //                the Admin Assistant 48h later if still pending
-//   hr-month   — permanent-Day/Night (and other non-crew) workers' rows for
-//                a month; approved by HR after the month ends
+//   hr-shift   — permanent-Day/Night (and other non-crew) workers' rows for
+//                one Day or Night shift on one date; approved by HR after the
+//                shift ends, escalated to the Admin Assistant 48h later
+//   hr-month   — the same workers' rows for a whole month, for dates before
+//                2026-10-01 (HR_DAILY_FROM); approved by HR after month end
 model ApprovalUnit {
   id                Int       @id @default(autoincrement())
   key               String    @unique

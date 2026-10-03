@@ -40,7 +40,7 @@ async function loadPeriod({ subcontractorName, visibility = {}, from, to }) {
       where: {
         subcontractorName,
         OR: [
-          { kind: 'crew-shift', date: { gte: dateOnly(from), lte: dateOnly(to) } },
+          { kind: { in: ['crew-shift', 'hr-shift'] }, date: { gte: dateOnly(from), lte: dateOnly(to) } },
           ...(months.length ? [{ kind: 'hr-month', month: { in: months } }] : [])
         ]
       }

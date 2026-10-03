@@ -1,7 +1,7 @@
 // Unit tests for sync/approvalLogic.js — pure, no database.
 //   node test/approvalLogicTest.js
 
-const { planReconcile, canApprove, isEscalationDue, unitDueAt, crewUnitKey } = require('../sync/approvalLogic');
+const { planReconcile, canApprove, isEscalationDue, unitDueAt, crewUnitKey, hrUnitKey, hrUnitKind, unitLabel } = require('../sync/approvalLogic');
 
 const DAY = { id: 1, name: 'Day', startTime: '08:00', endTime: '17:00', graceMinutes: 30, earlyOutGraceMinutes: 0, earliestCheckIn: '05:00', latestCheckOut: '05:00' };
 const NIGHT = { id: 2, name: 'Night', startTime: '17:00', endTime: '08:00', graceMinutes: 30, earlyOutGraceMinutes: 0, earliestCheckIn: '14:00', latestCheckOut: '12:00' };
@@ -89,6 +89,29 @@ function stored(overrides = {}) {
   check('HR approves the permanent-Day month once it has ended', canApprove({ role: 'hr' }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
   check('HR cannot approve the month before it ends', !canApprove({ role: 'hr' }, month, Date.parse('2026-09-30T06:00:00Z')).ok);
   check('Supervisors cannot approve the HR month', !canApprove({ role: 'supervisor', crewId: 3 }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
+}
+
+// --- Permanent staff: HR approves shift by shift from 1 Oct 2026 ---
+{
+  check('Before the cutover: monthly batch', hrUnitKind('2026-09-30') === 'hr-month' && hrUnitKey('A', '2026-09-30', 1) === 'hr:A:2026-09');
+  check('From the cutover: one batch per shift per date', hrUnitKind('2026-10-01') === 'hr-shift'
+    && hrUnitKey('A', '2026-10-01', 1) === 'hr:A:2026-10-01:1' && hrUnitKey('A', '2026-10-01', 2) === 'hr:A:2026-10-01:2');
+  check('HR Night batch is due at 08:00 EAT next morning', unitDueAt({ kind: 'hr-shift', dateStr: '2026-10-01', shift: NIGHT }).toISOString() === '2026-10-02T05:00:00.000Z');
+  check('Labels', unitLabel({ kind: 'hr-shift', date: new Date('2026-10-02T00:00:00Z') }, null, 'Day') === 'Permanent staff · Day · 2026-10-02'
+    && unitLabel({ kind: 'hr-month', month: '2026-09' }) === 'Permanent staff · 2026-09'
+    && unitLabel({ kind: 'crew-shift', date: new Date('2026-10-02T00:00:00Z') }, 'Crew A', 'Night') === 'Crew A · Night · 2026-10-02');
+
+  const due = new Date('2026-10-02T14:00:00Z');
+  const after = due.getTime() + HOUR;
+  const shift = { kind: 'hr-shift', crewId: null, status: 'pending', dueAt: due, escalatedAt: null, reopenedAt: null };
+  check('HR approves a permanent-staff shift once it ends', canApprove({ role: 'hr' }, shift, after).ok);
+  check('HR cannot approve it before the shift ends', !canApprove({ role: 'hr' }, shift, due.getTime() - HOUR).ok);
+  check('Admin Assistant cannot approve it before escalation', !canApprove({ role: 'admin_assistant' }, shift, after).ok);
+  check('Admin Assistant can approve it once escalated', canApprove({ role: 'admin_assistant' }, { ...shift, escalatedAt: new Date() }, after).ok);
+  check('Supervisors cannot approve it', !canApprove({ role: 'supervisor', crewId: 3 }, shift, after).ok);
+  check('Supervisor with no crew cannot approve it', !canApprove({ role: 'supervisor', crewId: null }, shift, after).ok);
+  check('Auditor and System Admin cannot approve it', !canApprove({ role: 'auditor' }, shift, after).ok && !canApprove({ role: 'sysadmin' }, shift, after).ok);
+  check('It escalates after 48h', !isEscalationDue(shift, due.getTime() + 47 * HOUR) && isEscalationDue(shift, due.getTime() + 48 * HOUR));
 }
 
 // --- Confirming a suggested schedule is a label change, not a new attendance ---

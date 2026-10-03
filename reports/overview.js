@@ -60,7 +60,7 @@ function computeOverview({ rows, units = [], crews = [], now = Date.now() }) {
   const approvals = {
     batches: due.length,
     approved: approved.length,
-    approvedOnTime: approved.filter((u) => u.kind !== 'crew-shift' || new Date(u.approvedAt) <= escalationDueAt(u)).length,
+    approvedOnTime: approved.filter((u) => u.kind === 'hr-month' ||new Date(u.approvedAt) <= escalationDueAt(u)).length,
     waiting: due.filter((u) => u.status !== 'approved').length,
     escalated: due.filter((u) => u.escalatedAt).length,
     reopened: due.filter((u) => u.status === 'reopened').length
@@ -84,7 +84,7 @@ function compare(current, previous) {
 function attention(overview, change) {
   const out = [];
   const { totals, approvals } = overview;
-  if (approvals.escalated) out.push(`${approvals.escalated} approval batch${approvals.escalated === 1 ? ' was' : 'es were'} escalated to HR (not approved within 48 hours).`);
+  if (approvals.escalated) out.push(`${approvals.escalated} approval batch${approvals.escalated === 1 ? ' was' : 'es were'} escalated (not approved within 48 hours).`);
   if (approvals.waiting) out.push(`${approvals.waiting} batch${approvals.waiting === 1 ? ' is' : 'es are'} still waiting for approval.`);
   if (totals.changedAfterApproval) out.push(`${totals.changedAfterApproval} approved shift${totals.changedAfterApproval === 1 ? '' : 's'} changed afterwards and need${totals.changedAfterApproval === 1 ? 's' : ''} re-approval.`);
   if (change && change.noShows > 0 && totals.noShows >= 5) out.push(`Absences are up by ${change.noShows} on the previous period.`);

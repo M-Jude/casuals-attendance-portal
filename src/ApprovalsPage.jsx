@@ -138,7 +138,7 @@ function UnitDetail({ api, id, onBack, onApproved }) {
           <p className="page__hint">
             <span className={`chip ${state.cls}`}>{state.label}</span>
             {unit.status !== 'approved' && !unit.open && (
-              <>Approvable since {formatDateTime(unit.dueAt)}{unit.escalatesAt && !unit.escalatedAt ? ` · escalates to HR ${formatDateTime(unit.escalatesAt)}` : ''}</>
+              <>Approvable since {formatDateTime(unit.dueAt)}{unit.escalatesAt && !unit.escalatedAt ? ` · escalates to ${unit.kind === 'hr-shift' ? 'the Admin Assistant' : 'HR'} ${formatDateTime(unit.escalatesAt)}` : ''}</>
             )}
             {unit.escalatedAt && <> · escalated {formatDateTime(unit.escalatedAt)}</>}
             {unit.approvedAt && <> · approved {formatDateTime(unit.approvedAt)}{unit.approvedBy ? ` by ${unit.approvedBy.name}` : ''}</>}
@@ -279,8 +279,8 @@ export default function ApprovalsPage({ api, user, onChanged }) {
 
   const hint = {
     supervisor: `Approve each ${user.crewName || 'crew'} shift once it ends. Anything left unapproved for 48 hours is escalated to HR and the Admin Assistant.`,
-    hr: 'Shifts escalated after 48 hours without supervisor approval, and the permanent-staff records you approve at month end.',
-    admin_assistant: 'Shifts escalated after 48 hours without supervisor approval.',
+    hr: 'Approve each permanent-staff shift (anyone not on a crew) once it ends — left for 48 hours, the Admin Assistant can approve it too. Also crew shifts escalated after 48 hours without supervisor approval.',
+    admin_assistant: 'Shifts escalated after 48 hours without approval, from crew supervisors or HR.',
     sysadmin: 'All approval batches, for reference. Approving is done by each crew’s supervisor, HR and the Admin Assistant — not the System Admin.',
     auditor: 'Every approval batch for every crew: who approved it and when, their comments, escalations, and records changed after approval. Read-only.',
     director: 'Every crew’s approval batches and their history: who approved each shift and when, comments, escalations, and records changed after approval. Read-only.'
