@@ -234,7 +234,7 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
       if (unit.status === 'approved' && outstanding > 0) {
         await tx.approvalUnit.update({
           where: { key },
-          data: { status: 'reopened', reopenedAt: computedAt, escalatedAt: null, dueNotifiedAt: null }
+          data: { status: 'reopened', reopenedAt: computedAt, escalatedAt: null, dueNotifiedAt: null, overdueRemindedAt: null }
         });
       } else if (unit.status === 'reopened' && outstanding === 0) {
         await tx.approvalUnit.update({ where: { key }, data: { status: 'approved', reopenedAt: null } });

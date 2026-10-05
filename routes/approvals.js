@@ -1,5 +1,4 @@
 const express = require('express');
-const { Prisma } = require('@prisma/client');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
@@ -7,6 +6,7 @@ const { canApprove, escalationDueAt, unitLabel } = require('../sync/approvalLogi
 const { dateStrOf } = require('../sync/scheduleResolver');
 const { normalizeDoubles } = require('../reports/doubleShift');
 const { accountNameResolver } = require('../services/accountNames');
+const { approveUnit, MAX_COMMENT } = require('../services/approveUnit');
 
 const router = express.Router();
 const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
@@ -14,7 +14,6 @@ const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
 // and the Director, who see every batch (unitScope gives roles it doesn't
 // name everything) but can't approve: canApprove refuses them.
 const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor', 'director'];
-const MAX_COMMENT = 2000;
 
 // Which batches a user sees under "my approvals":
 //   supervisor      — their crew's shifts
@@ -165,8 +164,7 @@ router.get('/approvals/:id', authenticate, requireRole(...VIEWERS), async (req, 
   }
 });
 
-// Approves a whole batch: applies any changes that arrived after an earlier
-// approval, stamps every row as approved, and records the comments.
+// Approves a whole batch (see services/approveUnit.js).
 router.post('/approvals/:id/approve', authenticate, requireRole(...APPROVERS), async (req, res) => {
   const comment = typeof req.body?.comment === 'string' ? req.body.comment.slice(0, MAX_COMMENT) : null;
   const rowComments = req.body?.rowComments && typeof req.body.rowComments === 'object' ? req.body.rowComments : {};
@@ -178,42 +176,7 @@ router.post('/approvals/:id/approve', authenticate, requireRole(...APPROVERS), a
     const permission = canApprove(req.user, unit, Date.now());
     if (!permission.ok) return res.status(403).json({ error: permission.reason });
 
-    const now = new Date();
-    await prisma.$transaction(async (tx) => {
-      // Claim the batch first: only one request can move it to approved, and
-      // the row stays locked until this transaction ends, so a double click or
-      // two approvers at once can't apply the pending changes twice or
-      // overwrite who approved it.
-      const claimed = await tx.approvalUnit.updateMany({
-        where: { id: unit.id, status: { not: 'approved' } },
-        data: { status: 'approved', approvedAt: now, approvedById: req.user.id, comment, reopenedAt: null }
-      });
-      if (claimed.count === 0) throw Object.assign(new Error('This has already been approved.'), { status: 409 });
-
-      const rows = await tx.dailyAttendanceSummary.findMany({ where: { approvalKey: unit.key } });
-      for (const row of rows) {
-        const pending = row.changedAfterApproval ? row.pendingValues : null;
-        if (pending && pending.deleted) {
-          await tx.dailyAttendanceSummary.delete({ where: { id: row.id } });
-          continue;
-        }
-        const data = {
-          approvedAt: now,
-          approvedById: req.user.id,
-          changedAfterApproval: false,
-          pendingValues: Prisma.JsonNull
-        };
-        if (pending) {
-          for (const field of ['source', 'status', 'lateIn', 'earlyCheckOut', 'hasMultiplePunches', 'hoursWorked', 'regularHours', 'checkInImplied', 'checkOutImplied', 'punchIds', 'approvalKey', 'approvalCrewId']) {
-            if (field in pending) data[field] = pending[field];
-          }
-          data.checkIn = pending.checkIn ? new Date(pending.checkIn) : null;
-          data.checkOut = pending.checkOut ? new Date(pending.checkOut) : null;
-        }
-        if (typeof rowComments[row.id] === 'string') data.supervisorComment = rowComments[row.id].slice(0, MAX_COMMENT) || null;
-        await tx.dailyAttendanceSummary.update({ where: { id: row.id }, data });
-      }
-    });
+    await approveUnit(unit, { approverId: req.user.id, comment, rowComments });
 
     res.json({ success: true });
   } catch (err) {

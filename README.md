@@ -367,14 +367,25 @@ names the auditor.
   (`ApprovalUnit` kind `crew-shift`). It becomes approvable when the shift
   ends; the crew's supervisor gets an in-app reminder. Rows from other crews
   covering that shift go to the supervisor of the crew on duty.
+- Unapproved 24 hours after that, everyone who can approve it gets an
+  **overdue email** (and in-app), repeated every 24 hours until it's
+  approved — one email per person listing each of their overdue batches
+  with its records, late / absent / missing-punch counts, changes after
+  approval, how long it has waited and when it escalates.
 - Unapproved 48 hours after that, it escalates to HR and the Admin
-  Assistant (in-app + email), who can then approve it.
+  Assistant (in-app + email, with the same details), who can then approve
+  it; the crew's supervisor is emailed that it was escalated and can still
+  approve it. (`sync/approvalJobs.js`, every 15 minutes.)
 - Permanent Day/Night staff (and anyone not on a crew) are batched the same
   way, per shift per date (`hr-shift`): HR gets an in-app reminder when the
   shift ends and approves it; unapproved 48 hours later it escalates and
   the Admin Assistant can approve it too. Dates before 1 Oct 2026
   (`HR_DAILY_FROM` in `sync/approvalLogic.js`) stay in the monthly batches
   (`hr-month`) they were approved in.
+- A backlog can be cleared with `node scripts/approveBacklog.js --month
+  YYYY-MM --as <account email>` (a dry run; add `--yes` to approve). It
+  approves every waiting batch for that month — crew and permanent staff —
+  as that account, with a comment and an audit entry for each.
 - Approved rows are locked. A later recomputation that would change one (a
   late-synced punch, a schedule fix) parks the new values in
   `pendingValues`, flags `changedAfterApproval`, reopens the batch and

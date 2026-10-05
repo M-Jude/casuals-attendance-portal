@@ -6,6 +6,7 @@
 const { shiftGeometry, eatToUtcMs } = require('./shiftEngine');
 
 const ESCALATE_AFTER_MS = 48 * 60 * 60 * 1000;
+const REMIND_EVERY_MS = 24 * 60 * 60 * 1000;
 
 // Fields that make up a row's reported attendance. A recompute that changes
 // any of these on an approved row needs re-approval.
@@ -134,6 +135,25 @@ function escalationDueAt(unit) {
   return new Date(start + ESCALATE_AFTER_MS);
 }
 
+// An unapproved batch is overdue 24h after it became approvable (or was
+// reopened), and its approvers are reminded then and every 24h after, until
+// it's approved. An escalation counts as a reminder.
+function isOverdueReminderDue(unit, now) {
+  if (unit.status === 'approved') return false;
+  const start = Math.max(new Date(unit.dueAt).getTime(), unit.reopenedAt ? new Date(unit.reopenedAt).getTime() : 0);
+  const last = unit.overdueRemindedAt ? new Date(unit.overdueRemindedAt).getTime() : 0;
+  return now >= Math.max(start, last) + REMIND_EVERY_MS;
+}
+
+// Who can approve a batch right now (and so is reminded about it): the
+// crew's supervisors (crewId) and/or everyone with one of `roles`.
+function approversOf(unit) {
+  const escalated = !!unit.escalatedAt;
+  if (unit.kind === 'crew-shift') return { crewId: unit.crewId, roles: escalated ? ['hr', 'admin_assistant'] : [] };
+  if (unit.kind === 'hr-shift') return { crewId: null, roles: escalated ? ['hr', 'admin_assistant'] : ['hr'] };
+  return { crewId: null, roles: ['hr'] };
+}
+
 function isEscalationDue(unit, now) {
   return (unit.kind === 'crew-shift' || unit.kind === 'hr-shift') && unit.status !== 'approved' && !unit.escalatedAt && now >= escalationDueAt(unit).getTime();
 }
@@ -183,6 +203,8 @@ module.exports = {
   unitDueAt,
   escalationDueAt,
   isEscalationDue,
+  isOverdueReminderDue,
+  approversOf,
   canApprove,
   ESCALATE_AFTER_MS,
   COMPARED_FIELDS
