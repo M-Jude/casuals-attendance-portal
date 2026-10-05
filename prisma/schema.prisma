@@ -236,6 +236,7 @@ model ApprovalUnit {
   status            String    @default("pending") // pending | approved | reopened
   reopenedAt        DateTime?
   dueNotifiedAt     DateTime?
+  overdueRemindedAt DateTime? // last overdue email reminder (every 24h while unapproved)
   escalatedAt       DateTime?
   approvedAt        DateTime?
   approvedById      Int?
