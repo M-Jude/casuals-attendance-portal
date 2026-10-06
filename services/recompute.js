@@ -9,9 +9,10 @@ function todayEat() {
 
 // What a recalculation did, for the person who triggered it: the date range
 // and how many shift records were added, changed, removed, or (already
-// approved and now different) held for re-approval — less any re-approved
-// automatically (`reapproved`). `skipped` when the Day/Night shifts aren't
-// set up yet, so nothing could be worked out.
+// approved and now different) still held for re-approval, and how many were
+// approved automatically with a schedule change (`reapproved`: held ones,
+// plus ones it added to already-approved batches). `skipped` when the
+// Day/Night shifts aren't set up yet, so nothing could be worked out.
 function outcome(result, from, to) {
   if (!result) return { from, to, skipped: true, computed: 0, created: 0, updated: 0, deleted: 0, flaggedAfterApproval: 0, reapproved: 0 };
   return {
@@ -21,7 +22,7 @@ function outcome(result, from, to) {
     created: result.created || 0,
     updated: result.updated || 0,
     deleted: result.deleted || 0,
-    flaggedAfterApproval: (result.flaggedAfterApproval || 0) - (result.reapproved || 0),
+    flaggedAfterApproval: result.flaggedAfterApproval || 0,
     reapproved: result.reapproved || 0
   };
 }
@@ -41,8 +42,10 @@ async function recomputeWorkers(workerIds, fromDate, toDate, { autoApproveBy = n
   if (!workerIds.length) return outcome({ computed: 0 }, from, to);
   return outcome(await withSyncLock(async () => {
     const result = await computeSummaries(from, to, { workerIds });
-    if (result && autoApproveBy && result.flaggedIds?.length) {
-      result.reapproved = await reapproveRows(result.flaggedIds, { approverId: autoApproveBy });
+    if (result && autoApproveBy && (result.flaggedIds?.length || result.createdRows?.length)) {
+      const { held, added } = await reapproveRows(result.flaggedIds || [], { approverId: autoApproveBy, createdRows: result.createdRows || [] });
+      result.flaggedAfterApproval = (result.flaggedAfterApproval || 0) - held;
+      result.reapproved = held + added;
     }
     return result;
   }), from, to);

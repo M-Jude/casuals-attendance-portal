@@ -403,8 +403,11 @@ names the auditor.
   values applied, a record no longer supported by the punches removed),
   and a batch left with nothing to approve is approved again — keeping its
   original approver, or stamped with this change if it's a batch the rows
-  moved into. Only records this change held are touched; new shifts and
-  anything held for another reason still need approving. Unticked, they're
+  moved into. Shifts the change *adds* to a batch that was already
+  approved are approved too: a Night that becomes a Day is the old Night
+  record removed plus a new Day record, so both sides go through. New
+  shifts in batches not yet approved (e.g. today's) and anything held for
+  another reason are left for their approver. Unticked, they're
   held for re-approval as before. The audit entry says which was chosen
   and how many were re-approved (`services/approveUnit.js` reapproveRows).
 

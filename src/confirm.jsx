@@ -111,7 +111,7 @@ export function reapproveCheckbox(from) {
   if (from > todayEatStr()) return undefined;
   return {
     label: 'Re-approve changed records automatically',
-    hint: 'Approved shifts whose figures change are re-approved as you, instead of going back to their supervisor or HR. Untick to hold them for re-approval.',
+    hint: 'Shifts already approved that this change alters or replaces (e.g. a Night that becomes a Day) are approved as you, instead of going back to their supervisor or HR. Untick to send them back for approval.',
     defaultChecked: true
   };
 }
