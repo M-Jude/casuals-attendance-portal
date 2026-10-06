@@ -383,14 +383,30 @@ names the auditor.
   (`HR_DAILY_FROM` in `sync/approvalLogic.js`) stay in the monthly batches
   (`hr-month`) they were approved in.
 - A backlog can be cleared with `node scripts/approveBacklog.js --month
-  YYYY-MM --as <account email>` (a dry run; add `--yes` to approve). It
-  approves every waiting batch for that month — crew and permanent staff —
-  as that account, with a comment and an audit entry for each.
+  YYYY-MM --as <account email>`, or `--from YYYY-MM-DD --to YYYY-MM-DD`
+  for a custom range (inclusive; `--to` defaults to `--from`). It's a dry
+  run; add `--yes` to approve. It approves every waiting batch in the
+  period — crew and permanent staff — as that account, with a comment and
+  an audit entry for each. Shifts that haven't ended yet are skipped, and
+  an older monthly batch only counts when the range covers its whole month.
 - Approved rows are locked. A later recomputation that would change one (a
   late-synced punch, a schedule fix) parks the new values in
   `pendingValues`, flags `changedAfterApproval`, reopens the batch and
   restarts its 48h clock. Finance keeps seeing the approved values until
   it's re-approved.
+- **Re-approving automatically with a schedule change.** Changing a
+  worker's schedule (Schedules → Workers, or accepting in Pattern review)
+  asks for confirmation with a **"Re-approve changed records
+  automatically"** checkbox, ticked by default (shown only when the change
+  reaches existing records). Ticked, the approved shifts that change are
+  re-approved straight away as the person making the change (pending
+  values applied, a record no longer supported by the punches removed),
+  and a batch left with nothing to approve is approved again — keeping its
+  original approver, or stamped with this change if it's a batch the rows
+  moved into. Only records this change held are touched; new shifts and
+  anything held for another reason still need approving. Unticked, they're
+  held for re-approval as before. The audit entry says which was chosen
+  and how many were re-approved (`services/approveUnit.js` reapproveRows).
 
 ## Live view
 

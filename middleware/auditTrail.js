@@ -109,12 +109,12 @@ rule('POST', '/api/workers/:id/schedule', {
   category: 'schedule', action: 'worker.schedule', entityType: 'worker', entity: (p) => p.id,
   summary: async ({ params, body }) => {
     const target = body.type === 'crew' ? await nameOfCrew(body.crewId) : body.type;
-    return `Set ${await nameOfWorker(params.id)}'s schedule to ${target}${body.effectiveFrom ? ` from ${body.effectiveFrom}` : ''}`;
+    return `Set ${await nameOfWorker(params.id)}'s schedule to ${target}${body.effectiveFrom ? ` from ${body.effectiveFrom}` : ''}${body.autoReapprove === true ? ', re-approving changed records automatically' : ''}`;
   }
 });
 rule('POST', '/api/pattern-review/:workerId/:action', {
   category: 'schedule', action: 'pattern.review', entityType: 'worker', entity: (p) => p.workerId,
-  summary: async ({ params }) => `${params.action === 'accept' ? 'Accepted' : 'Dismissed'} the suggested pattern for ${await nameOfWorker(params.workerId)}`
+  summary: async ({ params, body }) => `${params.action === 'accept' ? 'Accepted' : 'Dismissed'} the suggested pattern for ${await nameOfWorker(params.workerId)}${params.action === 'accept' && body.autoReapprove === true ? ', re-approving changed records automatically' : ''}`
 });
 rule('PUT', '/api/exceptions', {
   category: 'schedule', action: 'exception.save', entityType: 'worker', entity: (p, b) => b.workerId,

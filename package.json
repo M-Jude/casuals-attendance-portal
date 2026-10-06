@@ -14,7 +14,7 @@
     "bootstrap:schedules": "node scripts/bootstrapSchedules.js",
     "recompute": "node scripts/recompute.js",
     "digest": "node scripts/weeklyDigest.js",
-    "test": "node test/shiftEngineTest.js && node test/patternProfilerTest.js && node test/approvalLogicTest.js && node test/approvalJobsTest.js && node test/scheduleResolverTest.js && node test/reportsTest.js && node test/auditTest.js && node test/passwordChangeTest.js && node test/passwordPolicyTest.js && node test/accountEmailTest.js && node test/recomputeTest.js && node test/auditorRoleTest.js && node test/adminSafeguardsTest.js && node test/twoStepTest.js && node test/systemStatusTest.js && node test/dbGrantsTest.js && node test/overviewTest.js && node test/accountDeleteTest.js && node test/liveViewTest.js && node test/mockSyncTest.js && node test/cookieExtractionTest.js"
+    "test": "node test/shiftEngineTest.js && node test/patternProfilerTest.js && node test/approvalLogicTest.js && node test/approvalJobsTest.js && node test/scheduleResolverTest.js && node test/reportsTest.js && node test/auditTest.js && node test/passwordChangeTest.js && node test/passwordPolicyTest.js && node test/accountEmailTest.js && node test/recomputeTest.js && node test/reapproveTest.js && node test/auditorRoleTest.js && node test/adminSafeguardsTest.js && node test/twoStepTest.js && node test/systemStatusTest.js && node test/dbGrantsTest.js && node test/overviewTest.js && node test/accountDeleteTest.js && node test/liveViewTest.js && node test/mockSyncTest.js && node test/cookieExtractionTest.js"
   },
   "dependencies": {
     "@prisma/client": "^5.18.0",

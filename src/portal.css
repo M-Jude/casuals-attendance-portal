@@ -1095,6 +1095,8 @@ body.no-scroll { overflow: hidden; }
 .confirm__body { font-size: 14px; line-height: 1.55; color: var(--muted); }
 .confirm__body p { margin: 0 0 8px; }
 .confirm__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.confirm__check { display: flex; align-items: flex-start; margin-top: 12px; line-height: 1.4; }
+.confirm__check input { flex: none; margin-top: 2px; }
 @media (max-width: 600px) {
   .confirm-backdrop { place-items: end stretch; padding: 0; }
   .confirm { border-radius: 16px 16px 0 0; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }

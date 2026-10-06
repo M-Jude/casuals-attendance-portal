@@ -13,7 +13,9 @@ const SCHEDULE_TYPES = ['crew', 'fixed-day', 'fixed-night', 'unassigned'];
 const dateOnly = (dateStr) => new Date(`${dateStr}T00:00:00.000Z`);
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
-async function setWorkerSchedule({ workerId, type, crewId, effectiveFrom, note, userId, subcontractorName, supervisorAction }) {
+// autoReapprove: approved records the change alters are re-approved straight
+// away, as userId, instead of being held for re-approval.
+async function setWorkerSchedule({ workerId, type, crewId, effectiveFrom, note, userId, subcontractorName, supervisorAction, autoReapprove = false }) {
   if (!SCHEDULE_TYPES.includes(type)) throw httpError(400, 'Unknown schedule type.');
   if (!DATE_RE.test(effectiveFrom || '')) throw httpError(400, 'Effective-from date is required.');
   const worker = await prisma.casualWorker.findFirst({ where: { id: workerId, subcontractorName } });
@@ -34,7 +36,7 @@ async function setWorkerSchedule({ workerId, type, crewId, effectiveFrom, note, 
   if (afterSave) await afterSave();
   // Their records from the change onwards are worked out again against the
   // new schedule; returns what changed.
-  return recomputeWorkers([workerId], effectiveFrom);
+  return recomputeWorkers([workerId], effectiveFrom, undefined, { autoApproveBy: autoReapprove ? userId : null });
 }
 
 module.exports = { setWorkerSchedule, SCHEDULE_TYPES };

@@ -15,6 +15,11 @@ require.cache[path.resolve(__dirname, '../sync/computeDailySummaries.js')] = {
 };
 // liveSync pulls in the BioStar client; keep only the real lock.
 require.cache[path.resolve(__dirname, '../sync/attendanceSync.js')] = { loaded: true, exports: { syncRecent: async () => {} } };
+const reapprovals = [];
+require.cache[path.resolve(__dirname, '../services/approveUnit.js')] = {
+  loaded: true,
+  exports: { reapproveRows: async (ids, opts) => { reapprovals.push({ ids, opts }); return ids.length; } }
+};
 
 const { recomputeWorkers, recomputeLookback, todayEat } = require('../services/recompute');
 const { withSyncLock } = require('../services/liveSync');
@@ -53,6 +58,19 @@ async function main() {
   await recomputeWorkers([7], from);
   await sync;
   check('waits for a sync in progress before recalculating', calls.length === before + 1 && calls[before].at >= syncDone);
+
+  // Re-approving automatically with a schedule change.
+  nextResult = { computed: 12, created: 0, updated: 3, deleted: 0, flaggedAfterApproval: 2, flaggedIds: [101, 102] };
+  const held = await recomputeWorkers([7], from);
+  check('without auto re-approve: changed approved shifts are held', reapprovals.length === 0 && held.flaggedAfterApproval === 2 && held.reapproved === 0);
+  nextResult = { computed: 12, created: 0, updated: 3, deleted: 0, flaggedAfterApproval: 2, flaggedIds: [101, 102] };
+  const auto = await recomputeWorkers([7], from, undefined, { autoApproveBy: 4 });
+  check('with auto re-approve: exactly the rows this recalculation held are re-approved, as that account',
+    reapprovals.length === 1 && reapprovals[0].ids.join() === '101,102' && reapprovals[0].opts.approverId === 4);
+  check('…and reported as re-approved, not as needing re-approval', auto.reapproved === 2 && auto.flaggedAfterApproval === 0);
+  nextResult = { computed: 12, created: 0, updated: 3, deleted: 0, flaggedAfterApproval: 0, flaggedIds: [] };
+  await recomputeWorkers([7], from, undefined, { autoApproveBy: 4 });
+  check('with auto re-approve and nothing held: nothing to do', reapprovals.length === 1);
 
   let failed = 0;
   for (const [label, passed] of checks) {

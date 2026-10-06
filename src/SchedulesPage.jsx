@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDateLabel, formatDateTime, isReadOnly, todayEat } from './api';
 import { usePagination } from './Pagination';
 import SupervisorDecision from './SupervisorDecision';
 import { useSort } from './useSort';
 import { isAlreadyDone, useBusy, useToast } from './toast';
-import { recalcNotice, recalcResult, useConfirm } from './confirm';
+import { reapproveCheckbox, recalcNotice, recalcResult, useConfirm } from './confirm';
 
 function addDays(dateStr, n) {
   return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
@@ -262,6 +262,7 @@ function ScheduleEditor({ api, worker, crews, onSaved, onCancel }) {
   const [effectiveFrom, setEffectiveFrom] = useState(historyStart || todayEat());
   const [error, setError] = useState('');
   const [decision, setDecision] = useState(null); // set when the worker is a supervisor being moved
+  const autoReapproveRef = useRef(false); // the confirmation's answer, reused for the supervisor follow-up
   const toast = useToast();
   const confirm = useConfirm();
   const { guard, busy } = useBusy();
@@ -269,22 +270,30 @@ function ScheduleEditor({ api, worker, crews, onSaved, onCancel }) {
   async function save(supervisorAction) {
     const [type, crewId] = value.startsWith('crew:') ? ['crew', Number(value.slice(5))] : [value, null];
     const label = type === 'crew' ? crews.find((c) => c.id === crewId)?.name : { 'fixed-day': 'Permanent Day', 'fixed-night': 'Permanent Night', unassigned: 'Unassigned' }[type];
-    // Confirmed once; the supervisor follow-up question (supervisorAction) doesn't ask again.
-    if (!supervisorAction && !(await confirm({
-      title: `Change ${worker.name}’s schedule?`,
-      body: (
-        <>
-          <p>From <strong>{worker.schedule.label}</strong> to <strong>{label}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
-          <p>{recalcNotice(`${worker.name}’s`, effectiveFrom)}</p>
-        </>
-      ),
-      confirmLabel: 'Change schedule'
-    }))) return undefined;
+    // Confirmed once; the supervisor follow-up question (supervisorAction)
+    // doesn't ask again and keeps the answer given then.
+    let autoReapprove = autoReapproveRef.current;
+    if (!supervisorAction) {
+      const ok = await confirm({
+        title: `Change ${worker.name}’s schedule?`,
+        body: (
+          <>
+            <p>From <strong>{worker.schedule.label}</strong> to <strong>{label}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
+            <p>{recalcNotice(`${worker.name}’s`, effectiveFrom)}</p>
+          </>
+        ),
+        checkbox: reapproveCheckbox(effectiveFrom),
+        confirmLabel: 'Change schedule'
+      });
+      if (!ok) return undefined;
+      autoReapprove = ok.checked === true;
+      autoReapproveRef.current = autoReapprove;
+    }
 
     return guard(async () => {
       setError('');
       try {
-        const result = await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom, supervisorAction } });
+        const result = await api(`/api/workers/${worker.id}/schedule`, { method: 'POST', body: { type, crewId, effectiveFrom, supervisorAction, autoReapprove } });
         toast.success(`${worker.name} is now on ${label} from ${formatDateLabel(effectiveFrom)}.${recalcResult(result.recalculated)}`);
         onSaved();
       } catch (err) {
@@ -442,6 +451,7 @@ function ReviewTab({ api, user }) {
   const [error, setError] = useState('');
   const [effectiveFrom, setEffectiveFrom] = useState(todayEat());
   const [pending, setPending] = useState(null); // { item, decision } while HR decides about a supervisor
+  const autoReapproveRef = useRef(false); // the confirmation's answer, reused for the supervisor follow-up
   const toast = useToast();
   const confirm = useConfirm();
   const { guard, isBusy } = useBusy();
@@ -465,21 +475,29 @@ function ReviewTab({ api, user }) {
 
   async function act(item, action, supervisorAction) {
     // Accepting changes their schedule (and recalculates); dismissing doesn't.
-    if (action === 'accept' && !supervisorAction && !(await confirm({
-      title: `Move ${item.name} to ${item.suggested}?`,
-      body: (
-        <>
-          <p>From <strong>{item.current}</strong> to <strong>{item.suggested}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
-          <p>{recalcNotice(`${item.name}’s`, effectiveFrom)}</p>
-        </>
-      ),
-      confirmLabel: 'Change schedule'
-    }))) return undefined;
+    // The supervisor follow-up (supervisorAction) keeps the earlier answer.
+    let autoReapprove = autoReapproveRef.current;
+    if (action === 'accept' && !supervisorAction) {
+      const ok = await confirm({
+        title: `Move ${item.name} to ${item.suggested}?`,
+        body: (
+          <>
+            <p>From <strong>{item.current}</strong> to <strong>{item.suggested}</strong>, from {formatDateLabel(effectiveFrom)}.</p>
+            <p>{recalcNotice(`${item.name}’s`, effectiveFrom)}</p>
+          </>
+        ),
+        checkbox: reapproveCheckbox(effectiveFrom),
+        confirmLabel: 'Change schedule'
+      });
+      if (!ok) return undefined;
+      autoReapprove = ok.checked === true;
+      autoReapproveRef.current = autoReapprove;
+    }
 
     return guard(item.workerId, async () => {
       setError('');
       try {
-        const result = await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom, supervisorAction } });
+        const result = await api(`/api/pattern-review/${item.workerId}/${action}`, { method: 'POST', body: { effectiveFrom, supervisorAction, autoReapprove: action === 'accept' && autoReapprove } });
         toast.success(action === 'accept'
           ? `${item.name} moved to ${item.suggested} from ${formatDateLabel(effectiveFrom)}.${recalcResult(result.recalculated)}`
           : `Suggestion for ${item.name} dismissed.`);
