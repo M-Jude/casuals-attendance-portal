@@ -18,7 +18,7 @@ require.cache[path.resolve(__dirname, '../sync/attendanceSync.js')] = { loaded: 
 const reapprovals = [];
 require.cache[path.resolve(__dirname, '../services/approveUnit.js')] = {
   loaded: true,
-  exports: { reapproveRows: async (ids, opts) => { reapprovals.push({ ids, opts }); return ids.length; } }
+  exports: { reapproveRows: async (ids, opts) => { reapprovals.push({ ids, opts }); return { held: ids.length, added: opts.createdRows.length }; } }
 };
 
 const { recomputeWorkers, recomputeLookback, todayEat } = require('../services/recompute');
@@ -68,9 +68,15 @@ async function main() {
   check('with auto re-approve: exactly the rows this recalculation held are re-approved, as that account',
     reapprovals.length === 1 && reapprovals[0].ids.join() === '101,102' && reapprovals[0].opts.approverId === 4);
   check('…and reported as re-approved, not as needing re-approval', auto.reapproved === 2 && auto.flaggedAfterApproval === 0);
-  nextResult = { computed: 12, created: 0, updated: 3, deleted: 0, flaggedAfterApproval: 0, flaggedIds: [] };
+  nextResult = { computed: 12, created: 0, updated: 3, deleted: 0, flaggedAfterApproval: 0, flaggedIds: [], createdRows: [] };
   await recomputeWorkers([7], from, undefined, { autoApproveBy: 4 });
-  check('with auto re-approve and nothing held: nothing to do', reapprovals.length === 1);
+  check('with auto re-approve and nothing held or added: nothing to do', reapprovals.length === 1);
+  // Night → Day: the Night rows are held (to be removed), the Day rows are new.
+  const dayRow = { casualWorkerId: 7, date: from, shiftId: 1 };
+  nextResult = { computed: 2, created: 1, updated: 0, deleted: 0, flaggedAfterApproval: 1, flaggedIds: [201], createdRows: [dayRow] };
+  const swapped = await recomputeWorkers([7], from, undefined, { autoApproveBy: 4 });
+  check('with auto re-approve: rows the change added are passed on too', reapprovals[1].opts.createdRows[0] === dayRow);
+  check('…counted as approved, none left held', swapped.reapproved === 2 && swapped.flaggedAfterApproval === 0);
 
   let failed = 0;
   for (const [label, passed] of checks) {

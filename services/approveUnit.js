@@ -51,13 +51,29 @@ async function approveUnit(unit, { approverId, comment = null, rowComments = {},
   });
 }
 
-// Re-approves the given rows that are held for re-approval (others are left
-// alone), then closes any batch they were in, or moved to, that has nothing
-// left to approve. Returns how many rows were re-approved.
-async function reapproveRows(rowIds, { approverId, now = new Date() }) {
-  if (!rowIds.length) return 0;
+// Re-approves what a schedule change did to already-approved attendance:
+//   rowIds      — rows it held for re-approval (others are left alone)
+//   createdRows — rows it added ({ casualWorkerId, date, shiftId }); those
+//                 in a batch that had been approved are approved too — e.g.
+//                 a Night that became a Day is a removed row plus a new one
+// then closes any batch they were in, or moved to, that has nothing left to
+// approve. Returns how many of each were approved: { held, added }.
+async function reapproveRows(rowIds, { approverId, createdRows = [], now = new Date() }) {
+  if (!rowIds.length && !createdRows.length) return { held: 0, added: 0 };
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.dailyAttendanceSummary.findMany({ where: { id: { in: rowIds }, changedAfterApproval: true, approvedAt: { not: null } } });
+    const held = rowIds.length
+      ? await tx.dailyAttendanceSummary.findMany({ where: { id: { in: rowIds }, changedAfterApproval: true, approvedAt: { not: null } } })
+      : [];
+    const added = [];
+    for (const c of createdRows) {
+      const [row] = await tx.dailyAttendanceSummary.findMany({
+        where: { casualWorkerId: c.casualWorkerId, date: new Date(`${c.date}T00:00:00.000Z`), shiftId: c.shiftId, approvedAt: null }
+      });
+      if (!row) continue;
+      const unit = await tx.approvalUnit.findUnique({ where: { key: row.approvalKey } });
+      if (unit?.approvedAt) added.push(row);
+    }
+    const rows = [...held, ...added];
     const keys = new Set();
     for (const row of rows) {
       keys.add(row.approvalKey);
@@ -78,7 +94,7 @@ async function reapproveRows(rowIds, { approverId, now = new Date() }) {
           : { status: 'approved', reopenedAt: null, approvedAt: now, approvedById: approverId, comment: 'Approved automatically with a schedule change.' }
       });
     }
-    return rows.length;
+    return { held: held.length, added: added.length };
   }, { timeout: 60000 });
 }
 

@@ -257,7 +257,8 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     updated: updates.length,
     deleted: plan.deletes.length,
     flaggedAfterApproval: plan.flags.length,
-    flaggedIds: plan.flags.map((f) => f.id)
+    flaggedIds: plan.flags.map((f) => f.id),
+    createdRows: plan.creates.map((f) => ({ casualWorkerId: f.casualWorkerId, date: f.date, shiftId: f.shiftId }))
   };
   console.log(`Daily summaries ${fromDateStr}..${toDateStr}: ${result.computed} rows (${result.created} new, ${result.updated} changed, ${result.deleted} removed, ${result.flaggedAfterApproval} held for re-approval).`);
   return result;

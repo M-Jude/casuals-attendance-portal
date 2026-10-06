@@ -14,6 +14,7 @@ const matchRow = (r, where) => Object.entries(where).every(([k, v]) => {
   if (k === 'OR') return v.some((w) => matchRow(r, w));
   if (v && typeof v === 'object' && 'in' in v) return v.in.includes(r[k]);
   if (v && typeof v === 'object' && 'not' in v) return r[k] !== v.not;
+  if (v instanceof Date) return r[k] instanceof Date && r[k].getTime() === v.getTime();
   return r[k] === v;
 });
 const tx = {
@@ -62,7 +63,7 @@ function row(id, key, o = {}) {
 
   const n = await reapproveRows([1, 2, 5, 6], { approverId: 3, now: new Date('2026-10-06T08:00:00Z') });
   const r1 = rows.find((r) => r.id === 1);
-  check('Counts only rows that were held for re-approval', n === 3);
+  check('Counts only rows that were held for re-approval', n.held === 3 && n.added === 0);
   check('Pending values applied and stamped as the person making the change', r1.status === 'late' && r1.hoursWorked === 7.5
     && r1.checkIn.toISOString() === '2026-10-02T06:00:00.000Z' && r1.approvedById === 3 && !r1.changedAfterApproval && r1.pendingValues !== undefined);
   check('A row no longer supported by the punches is removed', !rows.some((r) => r.id === 2));
@@ -79,7 +80,31 @@ function row(id, key, o = {}) {
   await reapproveRows([10], { approverId: 3 });
   check('Fully re-approved batch: approved again, original approver kept', units[0].status === 'approved' && units[0].approvedById === 7 && units[0].reopenedAt === null);
 
-  check('Nothing passed in: nothing done', (await reapproveRows([], { approverId: 3 })) === 0);
+  // Night → Day (the Anyango case): the approved Night is held for removal
+  // and a new Day row lands in an already-approved HR batch. Both go
+  // through; a new row in a batch never approved is left for its approver.
+  const NIGHT = 'crew:2:2026-10-01:2';
+  const DAY = 'hr:S:2026-10-01:1';
+  const TODAY = 'hr:S:2026-10-06:1';
+  units = [
+    { key: NIGHT, status: 'reopened', approvedAt: FIRST, approvedById: 7 },
+    { key: DAY, status: 'reopened', approvedAt: FIRST, approvedById: 9 },
+    { key: TODAY, status: 'pending', approvedAt: null, approvedById: null }
+  ];
+  rows = [
+    row(20, NIGHT, { changedAfterApproval: true, pendingValues: { deleted: true } }),
+    row(21, DAY, { casualWorkerId: 131, date: new Date('2026-10-01T00:00:00Z'), shiftId: 1, approvedAt: null, approvedById: null, status: 'on-time' }),
+    row(22, DAY),
+    row(23, TODAY, { casualWorkerId: 131, date: new Date('2026-10-06T00:00:00Z'), shiftId: 1, approvedAt: null, approvedById: null, status: 'in-progress' })
+  ];
+  const swap = await reapproveRows([20], { approverId: 1, createdRows: [{ casualWorkerId: 131, date: '2026-10-01', shiftId: 1 }, { casualWorkerId: 131, date: '2026-10-06', shiftId: 1 }] });
+  check('Night → Day: the old Night is removed, the new Day in an approved batch is approved', swap.held === 1 && swap.added === 1
+    && !rows.some((r) => r.id === 20) && rows.find((r) => r.id === 21).approvedById === 1);
+  check('Night → Day: both batches are approved again', units[0].status === 'approved' && units[1].status === 'approved' && units[1].approvedById === 9);
+  check('A new row in a batch never approved (today\'s shift) is left for its approver', rows.find((r) => r.id === 23).approvedAt === null && units[2].status === 'pending');
+
+  const none = await reapproveRows([], { approverId: 3 });
+  check('Nothing passed in: nothing done', none.held === 0 && none.added === 0);
 
   let failed = 0;
   for (const [label, passed] of checks) {
