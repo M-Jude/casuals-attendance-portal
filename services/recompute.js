@@ -1,6 +1,7 @@
 const { computeSummaries } = require('../sync/computeDailySummaries');
 const { eatDateStr, addDaysStr } = require('../sync/shiftEngine');
 const { withSyncLock } = require('./liveSync');
+const { reapproveRows } = require('./approveUnit');
 
 function todayEat() {
   return eatDateStr(Date.now());
@@ -8,10 +9,11 @@ function todayEat() {
 
 // What a recalculation did, for the person who triggered it: the date range
 // and how many shift records were added, changed, removed, or (already
-// approved and now different) held for re-approval. `skipped` when the
-// Day/Night shifts aren't set up yet, so nothing could be worked out.
+// approved and now different) held for re-approval — less any re-approved
+// automatically (`reapproved`). `skipped` when the Day/Night shifts aren't
+// set up yet, so nothing could be worked out.
 function outcome(result, from, to) {
-  if (!result) return { from, to, skipped: true, computed: 0, created: 0, updated: 0, deleted: 0, flaggedAfterApproval: 0 };
+  if (!result) return { from, to, skipped: true, computed: 0, created: 0, updated: 0, deleted: 0, flaggedAfterApproval: 0, reapproved: 0 };
   return {
     from,
     to,
@@ -19,7 +21,8 @@ function outcome(result, from, to) {
     created: result.created || 0,
     updated: result.updated || 0,
     deleted: result.deleted || 0,
-    flaggedAfterApproval: result.flaggedAfterApproval || 0
+    flaggedAfterApproval: (result.flaggedAfterApproval || 0) - (result.reapproved || 0),
+    reapproved: result.reapproved || 0
   };
 }
 
@@ -28,12 +31,21 @@ function outcome(result, from, to) {
 // and exception changes show up immediately instead of at the next hourly
 // run. Waits for any BioStar sync in progress so the two never write the
 // same records at once.
-async function recomputeWorkers(workerIds, fromDate, toDate) {
+//   autoApproveBy — an account id: approved records this recompute holds for
+//                   re-approval are re-approved straight away, as that
+//                   account (the person making the change chose to)
+async function recomputeWorkers(workerIds, fromDate, toDate, { autoApproveBy = null } = {}) {
   const today = todayEat();
   const to = toDate && toDate > today ? toDate : today;
   const from = fromDate < to ? fromDate : to;
   if (!workerIds.length) return outcome({ computed: 0 }, from, to);
-  return outcome(await withSyncLock(() => computeSummaries(from, to, { workerIds })), from, to);
+  return outcome(await withSyncLock(async () => {
+    const result = await computeSummaries(from, to, { workerIds });
+    if (result && autoApproveBy && result.flaggedIds?.length) {
+      result.reapproved = await reapproveRows(result.flaggedIds, { approverId: autoApproveBy });
+    }
+    return result;
+  }), from, to);
 }
 
 // Recomputes everyone over the regular sync lookback window. Callers hold

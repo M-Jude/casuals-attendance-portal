@@ -269,12 +269,13 @@ router.get('/workers', authenticate, requireRole('sysadmin', 'hr', 'admin_assist
 });
 
 router.post('/workers/:id/schedule', authenticate, requireRole(...SCHEDULE_EDITORS), async (req, res) => {
-  const { type, crewId, effectiveFrom, note, supervisorAction } = req.body || {};
+  const { type, crewId, effectiveFrom, note, supervisorAction, autoReapprove } = req.body || {};
   try {
     const recalculated = await setWorkerSchedule({
       workerId: parseInt(req.params.id, 10), type, crewId, effectiveFrom, note: note || null,
-      userId: req.user.id, subcontractorName: req.user.subcontractorName, supervisorAction
+      userId: req.user.id, subcontractorName: req.user.subcontractorName, supervisorAction, autoReapprove: autoReapprove === true
     });
+    res.locals.audit = { details: { recalculated } };
     res.json({ success: true, recalculated });
   } catch (err) {
     // 409 + decision: the worker is a supervisor — the UI asks what happens to their account.
@@ -341,8 +342,10 @@ router.post('/pattern-review/:workerId/:action', authenticate, requireRole('sysa
       note: 'Accepted from pattern review',
       userId: req.user.id,
       subcontractorName: req.user.subcontractorName,
-      supervisorAction: req.body?.supervisorAction
+      supervisorAction: req.body?.supervisorAction,
+      autoReapprove: req.body?.autoReapprove === true
     });
+    res.locals.audit = { details: { recalculated } };
     res.json({ success: true, recalculated });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message, decision: err.decision });
