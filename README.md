@@ -318,7 +318,7 @@ job only covers the recent lookback window.
 
 | Role | Sees | Does |
 |---|---|---|
-| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Does not approve attendance** (separation of duties). Signs in with password + authenticator code |
+| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Can approve any batch** once its shift (or month) has ended, without waiting for escalation; recorded under their name like any approval. Signs in with password + authenticator code |
 | HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff's shifts and escalated shifts |
 
 System Admin safeguards:

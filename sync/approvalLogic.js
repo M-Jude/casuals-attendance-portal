@@ -164,16 +164,16 @@ function isEscalationDue(unit, now) {
 //   hr-shift   — HR once the shift has ended; the Admin Assistant too once
 //                it has been escalated
 //   hr-month   — HR once the month has ended
-//   sysadmin   — always (super user)
+//   sysadmin   — any batch once it's approvable (its shift or month has
+//                ended), without waiting for escalation
 function canApprove(user, unit, now) {
   if (unit.status === 'approved') return { ok: false, reason: 'Already approved.' };
   if (user.role === 'auditor') return { ok: false, reason: 'Auditors can view approvals but not approve them.' };
   if (user.role === 'director') return { ok: false, reason: 'Directors can view approvals but not approve them.' };
-  // Approving attendance is a payroll decision, not an IT one: System Admins
-  // (UCAA ICT) can see every batch but approving belongs to supervisors, HR
-  // and the Admin Assistant.
-  if (user.role === 'sysadmin') return { ok: false, reason: 'System Admins can view approvals but not approve them — that’s for the crew’s supervisor, HR or the Admin Assistant.' };
   const due = now >= new Date(unit.dueAt).getTime();
+  if (user.role === 'sysadmin') {
+    return due ? { ok: true } : { ok: false, reason: unit.kind === 'hr-month' ? 'The month has not ended yet.' : 'This shift has not ended yet.' };
+  }
   if (unit.kind === 'crew-shift') {
     if (user.role === 'supervisor' && user.crewId === unit.crewId) {
       return due ? { ok: true } : { ok: false, reason: 'This shift has not ended yet.' };

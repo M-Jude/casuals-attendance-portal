@@ -9,11 +9,11 @@ const { accountNameResolver } = require('../services/accountNames');
 const { approveUnit, MAX_COMMENT } = require('../services/approveUnit');
 
 const router = express.Router();
-const APPROVERS = ['hr', 'admin_assistant', 'supervisor'];
-// Who may look at batches: the approvers, plus the System Admin, the Auditor
-// and the Director, who see every batch (unitScope gives roles it doesn't
-// name everything) but can't approve: canApprove refuses them.
-const VIEWERS = [...APPROVERS, 'sysadmin', 'auditor', 'director'];
+const APPROVERS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
+// Who may look at batches: the approvers, plus the Auditor and the Director,
+// who see every batch (unitScope gives roles it doesn't name everything) but
+// can't approve: canApprove refuses them.
+const VIEWERS = [...APPROVERS, 'auditor', 'director'];
 
 // Which batches a user sees under "my approvals":
 //   supervisor      — their crew's shifts
