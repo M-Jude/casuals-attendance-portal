@@ -21,8 +21,8 @@ const row = (worker, date, shift, extra = {}) => ({
 });
 
 const rows = [
-  row(1, '2026-09-01', 'Day', { approvedAt: new Date() }),
-  row(1, '2026-09-01', 'Night', { approvedAt: new Date() }), // Day + Night = a double shift
+  row(1, '2026-09-01', 'Day', { approvedAt: new Date(), checkOut: new Date('2026-09-01T14:00:00Z') }),
+  row(1, '2026-09-01', 'Night', { approvedAt: new Date(), checkOut: new Date('2026-09-02T05:00:00Z') }), // Day + Night, both clocked out = a double shift
   row(2, '2026-09-01', 'Day', { lateIn: true, status: 'late' }),
   row(2, '2026-09-02', 'Day', { status: 'no-show', hoursWorked: null }),
   row(3, '2026-09-02', 'Night', { status: 'no-checkout', hoursWorked: null, approvalCrewId: 2 }),

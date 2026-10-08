@@ -8,6 +8,7 @@ const STATUS_ORDER_KEY = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 
 import { formatDateLabel, formatDateTime, formatTime } from './api';
 import { usePagination } from './Pagination';
 import { isAlreadyDone, useToast } from './toast';
+import { reapproveCheckbox, recalcResult, useConfirm } from './confirm';
 
 function unitState(u) {
   if (u.status === 'approved') return { label: 'Approved', cls: 'chip--ok' };
@@ -35,6 +36,9 @@ function RowFlags({ row }) {
       {isGuessed(row) && !row.double && <span className="chip chip--warn" title={GUESSED_TITLE}>Shift guessed</span>}
       {row.hasMultiplePunches && <span className="chip chip--warn">Multiple punches</span>}
       {(row.checkInImplied || row.checkOutImplied) && <span className="chip">Implied time</span>}
+      {row.possibleStray
+        ? <span className="chip chip--warn" title={`A lone badge next to their ${row.possibleDouble} — most likely made by mistake. Set it aside if so; if they really worked both, record a Day + Night exception instead.`}>Possible stray badge</span>
+        : row.possibleDouble && <span className="chip chip--warn" title="Back to back with another shift, but one of them has no clock-out — not counted as a double shift.">Possible double — check</span>}
     </>
   );
 }
@@ -65,9 +69,13 @@ function PendingChange({ row }) {
   );
 }
 
-function UnitDetail({ api, id, onBack, onApproved }) {
+const BADGE_EDITORS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
+
+function UnitDetail({ api, id, user, onBack, onApproved }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const approving = useRef(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [comment, setComment] = useState('');
@@ -95,7 +103,36 @@ function UnitDetail({ api, id, onBack, onApproved }) {
         setRowComments(Object.fromEntries(d.rows.map((r) => [r.id, r.supervisorComment || ''])));
       })
       .catch((err) => setError(err.message));
-  }, [api, id]);
+  }, [api, id, reloadKey]);
+
+  // A lone badge made by mistake: set it aside (left out of the shifts,
+  // which are worked out again) instead of approving it as a shift.
+  async function setStrayAside(r) {
+    const reason = { current: '' };
+    const ok = await confirm({
+      title: `Set aside ${r.worker.name}’s badge at ${formatTime(r.checkIn || r.checkOut)}?`,
+      body: (
+        <>
+          <p>It looks like a badge made by mistake next to their {r.possibleDouble}. It stays on record but is left out of their shifts, so this {r.shift.name} record goes away. It can be restored from the record’s punch history.</p>
+          <label className="field">Why?
+            <input className="input" maxLength={500} defaultValue="Accidental badge" onChange={(e) => { reason.current = e.target.value; }} />
+          </label>
+        </>
+      ),
+      checkbox: reapproveCheckbox(String(r.date).slice(0, 10)),
+      confirmLabel: 'Set aside'
+    });
+    if (!ok) return;
+    try {
+      const result = await api(`/api/punches/${r.strayPunchId}/set-aside`, { method: 'POST', body: { reason: reason.current.trim() || 'Accidental badge', autoReapprove: ok.checked === true } });
+      toast.success(`Badge set aside.${recalcResult(result.recalculated)}`);
+      // Its only record gone, an unapproved batch is removed: back to the list.
+      if (data.rows.length === 1) onApproved();
+      else setReloadKey((k) => k + 1);
+    } catch (err) {
+      toast.error(`Couldn’t set the badge aside: ${err.message}`);
+    }
+  }
 
   async function approve() {
     if (approving.current) return; // a second click while the first is still going
@@ -188,7 +225,12 @@ function UnitDetail({ api, id, onBack, onApproved }) {
                 <PendingChange row={r} />
                 <DoubleNote row={r} />
               </td>
-              <td><RowFlags row={r} /></td>
+              <td>
+                <RowFlags row={r} />
+                {r.possibleStray && r.strayPunchId && BADGE_EDITORS.includes(user.role) && unit.status !== 'approved' && (
+                  <div><button className="btn btn--link small" onClick={() => setStrayAside(r)}>Set badge aside</button></div>
+                )}
+              </td>
               <td>
                 {editable ? (
                   <input
@@ -271,6 +313,7 @@ export default function ApprovalsPage({ api, user, onChanged }) {
       <UnitDetail
         api={api}
         id={openId}
+        user={user}
         onBack={() => setOpenId(null)}
         onApproved={() => { setOpenId(null); load(); onChanged(); }}
       />
@@ -281,7 +324,7 @@ export default function ApprovalsPage({ api, user, onChanged }) {
     supervisor: `Approve each ${user.crewName || 'crew'} shift once it ends. Anything left unapproved for 48 hours is escalated to HR and the Admin Assistant.`,
     hr: 'Approve each permanent-staff shift (anyone not on a crew) once it ends — left for 48 hours, the Admin Assistant can approve it too. Also crew shifts escalated after 48 hours without supervisor approval.',
     admin_assistant: 'Shifts escalated after 48 hours without approval, from crew supervisors or HR.',
-    sysadmin: 'All approval batches, for reference. Approving is done by each crew’s supervisor, HR and the Admin Assistant — not the System Admin.',
+    sysadmin: 'Every approval batch. You can approve any batch once its shift (or month) has ended, without waiting for escalation.',
     auditor: 'Every approval batch for every crew: who approved it and when, their comments, escalations, and records changed after approval. Read-only.',
     director: 'Every crew’s approval batches and their history: who approved each shift and when, comments, escalations, and records changed after approval. Read-only.'
   }[user.role];

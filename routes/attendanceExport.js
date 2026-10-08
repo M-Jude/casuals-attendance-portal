@@ -4,7 +4,7 @@ const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { summaryVisibility } = require('../middleware/requireRole');
 const { statusTags, TAG_LABEL, addDays } = require('../reports/reportCatalog');
-const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('../reports/doubleShift');
+const { doubleShiftRuns, possibleDoubles, normalizeDoubles, mergeDoubles } = require('../reports/doubleShift');
 const { downloadStamp } = require('../services/audit');
 
 const router = express.Router();
@@ -60,6 +60,9 @@ router.get('/attendance/export', authenticate, async (req, res) => {
 
     // Part of two shifts worked back to back: "Day + Night", "Night + next Day".
     const doubles = doubleShiftRuns(normalized);
+    // Back to back but missing a clock-out: flagged, not counted.
+    const possible = possibleDoubles(normalized);
+    const doubleLabel = (r) => doubles.get(r.id)?.label || (possible.get(r.id) ? `Possible double - check (${possible.get(r.id).label})` : '');
     const parser = new Parser({
       fields: ['date', 'shift', 'shifts_worked', 'double_shift', 'employee_id', 'worker_name', 'check_in', 'check_out', 'hours_worked', 'regular_hours',
         'status', 'source', 'approval', 'approved_at', 'supervisor_comment']
@@ -68,7 +71,7 @@ router.get('/attendance/export', authenticate, async (req, res) => {
       date: r.date.toISOString().slice(0, 10),
       shift: r.shift.name,
       shifts_worked: r.parts ? 2 : r.status === 'no-show' ? 0 : 1,
-      double_shift: doubles.get((r.parts ? r.parts[0] : r).id)?.label || '',
+      double_shift: doubleLabel(r.parts ? r.parts[0] : r),
       employee_id: r.worker.biostarUserId,
       worker_name: r.worker.name,
       check_in: eatTime(r.checkIn) + (r.checkInImplied ? ' (implied)' : ''),

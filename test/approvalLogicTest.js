@@ -84,7 +84,9 @@ function stored(overrides = {}) {
   check('HR can approve once escalated', canApprove({ role: 'hr' }, { ...unit, escalatedAt: new Date() }, after).ok);
   check('Admin Assistant can approve once escalated', canApprove({ role: 'admin_assistant' }, { ...unit, escalatedAt: new Date() }, after).ok);
   check('Finance can never approve', !canApprove({ role: 'finance' }, { ...unit, escalatedAt: new Date() }, after).ok);
-  check('System admin cannot approve (separation of duties), and is told why', !canApprove({ role: 'sysadmin' }, unit, due.getTime() + HOUR).ok && /System Admins/.test(canApprove({ role: 'sysadmin' }, unit, due.getTime() + HOUR).reason));
+  check('System Admin can approve any crew shift once it has ended, without escalation', canApprove({ role: 'sysadmin' }, unit, due.getTime() + HOUR).ok);
+  check('System Admin cannot approve before the shift ends', !canApprove({ role: 'sysadmin' }, unit, due.getTime() - HOUR).ok);
+  check('System Admin can approve the HR month once it has ended', canApprove({ role: 'sysadmin' }, { kind: 'hr-month', status: 'pending', dueAt: due }, due.getTime() + HOUR).ok);
   const month = { kind: 'hr-month', status: 'pending', dueAt: new Date('2026-09-30T21:00:00Z') };
   check('HR approves the permanent-Day month once it has ended', canApprove({ role: 'hr' }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
   check('HR cannot approve the month before it ends', !canApprove({ role: 'hr' }, month, Date.parse('2026-09-30T06:00:00Z')).ok);
@@ -110,7 +112,7 @@ function stored(overrides = {}) {
   check('Admin Assistant can approve it once escalated', canApprove({ role: 'admin_assistant' }, { ...shift, escalatedAt: new Date() }, after).ok);
   check('Supervisors cannot approve it', !canApprove({ role: 'supervisor', crewId: 3 }, shift, after).ok);
   check('Supervisor with no crew cannot approve it', !canApprove({ role: 'supervisor', crewId: null }, shift, after).ok);
-  check('Auditor and System Admin cannot approve it', !canApprove({ role: 'auditor' }, shift, after).ok && !canApprove({ role: 'sysadmin' }, shift, after).ok);
+  check('Auditor cannot approve it; the System Admin can', !canApprove({ role: 'auditor' }, shift, after).ok && canApprove({ role: 'sysadmin' }, shift, after).ok);
   check('It escalates after 48h', !isEscalationDue(shift, due.getTime() + 47 * HOUR) && isEscalationDue(shift, due.getTime() + 48 * HOUR));
 }
 

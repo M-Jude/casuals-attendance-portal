@@ -37,14 +37,20 @@ function leanFromHistory(completeRows, dateStr) {
 // pattern, the same one their shifts were classified against.)
 //   - permanent Day/Night workers → HR's batch for that shift
 //   - a crew worker on their own crew's shift → their crew's supervisor
+//   - a crew worker on the OTHER shift of a day their crew is working, with
+//     no exception for it — usually a stray badge (e.g. a morning tap before
+//     their Night) → still their own crew's supervisor, who knows them
 //   - anyone else on a shift (a swap, cover or unscheduled worker) → the
 //     supervisor of the crew rostered on that shift that date
 //   - nobody rostered → the worker's own crew if they have one, else HR
 function approvalCrewFor({ resolver, workerId, dateStr, shiftName, tenantCrewIds }) {
   const sched = resolver.effectiveScheduleOn(workerId, dateStr);
   if (sched && (sched.type === 'fixed-day' || sched.type === 'fixed-night')) return null;
-  if (sched && sched.type === 'crew' && sched.crewId && resolver.crewShiftsOn(sched.crewId, dateStr).includes(shiftName)) {
-    return sched.crewId;
+  if (sched && sched.type === 'crew' && sched.crewId) {
+    const crewShifts = resolver.crewShiftsOn(sched.crewId, dateStr);
+    if (crewShifts.includes(shiftName)) return sched.crewId;
+    const expected = resolver.expectedFor(workerId)(dateStr)?.shifts || [];
+    if (crewShifts.length && !expected.includes(shiftName)) return sched.crewId;
   }
   const onShift = resolver.crewsOnShift(dateStr, shiftName, tenantCrewIds);
   if (onShift.length === 1) return onShift[0];
@@ -97,6 +103,7 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     prisma.attendanceLog.findMany({
       where: {
         casualWorkerId: { in: ids },
+        setAsideAt: null,
         timestamp: {
           gte: new Date(eatToUtcMs(addDaysStr(patternFrom, -1), '00:00')),
           lte: new Date(eatToUtcMs(addDaysStr(toDateStr, 2), '12:00'))
@@ -116,7 +123,7 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     }),
     prisma.workerProfile.findMany({ where: { casualWorkerId: { in: ids } } }),
     // Each worker's first ever punch — no shift before it can be a no-show.
-    prisma.attendanceLog.groupBy({ by: ['casualWorkerId'], where: { casualWorkerId: { in: ids } }, _min: { timestamp: true } })
+    prisma.attendanceLog.groupBy({ by: ['casualWorkerId'], where: { casualWorkerId: { in: ids }, setAsideAt: null }, _min: { timestamp: true } })
   ]);
   const firstPunchMs = new Map(firstPunches.map((f) => [f.casualWorkerId, f._min.timestamp.getTime()]));
 
@@ -266,22 +273,39 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
 
 // The raw punches behind one summary row, marking which ones were used as
 // its check-in and check-out — powers the punch history modal.
+// Badges set aside within the shift's own window (its date 05:00 EAT to
+// noon the next day) are listed too, so they can be seen and restored.
 async function getPunchDetailForSummary(summary) {
   const ids = Array.isArray(summary.punchIds) ? summary.punchIds : [];
-  if (ids.length === 0) return [];
+  const dateStr = new Date(summary.date).toISOString().slice(0, 10);
   const punches = await prisma.attendanceLog.findMany({
-    where: { id: { in: ids } },
-    select: { id: true, eventType: true, timestamp: true },
+    where: {
+      OR: [
+        ...(ids.length ? [{ id: { in: ids } }] : []),
+        {
+          casualWorkerId: summary.casualWorkerId,
+          setAsideAt: { not: null },
+          timestamp: { gte: new Date(eatToUtcMs(dateStr, '05:00')), lt: new Date(eatToUtcMs(addDaysStr(dateStr, 1), '12:00')) }
+        }
+      ]
+    },
+    select: { id: true, eventType: true, timestamp: true, setAsideAt: true, setAsideById: true, setAsideReason: true },
     orderBy: { timestamp: 'asc' }
   });
   const inMs = summary.checkIn && !summary.checkInImplied ? new Date(summary.checkIn).getTime() : null;
   const outMs = summary.checkOut && !summary.checkOutImplied ? new Date(summary.checkOut).getTime() : null;
+  const setters = await prisma.portalUser.findMany({
+    where: { id: { in: [...new Set(punches.map((p) => p.setAsideById).filter(Boolean))] } },
+    select: { id: true, name: true, email: true }
+  });
+  const setterName = new Map(setters.map((u) => [u.id, u.name || u.email]));
   return punches.map((p) => ({
     id: p.id,
     eventType: p.eventType,
     timestamp: p.timestamp,
-    usedAsCheckIn: p.timestamp.getTime() === inMs,
-    usedAsCheckOut: p.timestamp.getTime() === outMs
+    usedAsCheckIn: !p.setAsideAt && p.timestamp.getTime() === inMs,
+    usedAsCheckOut: !p.setAsideAt && p.timestamp.getTime() === outMs,
+    setAside: p.setAsideAt ? { at: p.setAsideAt, by: setterName.get(p.setAsideById) || null, reason: p.setAsideReason } : null
   }));
 }
 

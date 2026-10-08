@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatDateLabel, formatTime, todayEat } from './api';
 import { statusTags } from './shiftStatus';
-import { doubleShiftRuns, countDoubleShifts, doubleShiftTitle, normalizeDoubles, mergeDoubles } from './doubleShift';
+import { doubleShiftRuns, countDoubleShifts, doubleShiftTitle, possibleDoubles, POSSIBLE_DOUBLE_TITLE, normalizeDoubles, mergeDoubles } from './doubleShift';
 import StatusTags from './StatusTags';
 import PunchHistoryModal from './PunchHistoryModal';
 import { usePagination } from './Pagination';
@@ -66,6 +66,7 @@ export default function MyAttendancePage({ api, token, user }) {
 
   const worked = records.filter((r) => r.status !== 'no-show');
   const doubles = useMemo(() => doubleShiftRuns(records), [records]);
+  const possible = useMemo(() => possibleDoubles(records), [records]);
   const hours = records.reduce((a, r) => a + (r.hoursWorked || 0), 0);
   const tagged = records.map(statusTags);
   const lateIn = tagged.filter((t) => t.includes('late-in')).length;
@@ -146,6 +147,7 @@ export default function MyAttendancePage({ api, token, user }) {
                         <>
                           <span className={`chip ${r.shift.name === 'Night' ? 'chip--night' : 'chip--day'}`}>{r.shift.name}</span>
                           {doubles.has(r.id) && <span className="tag tag--double" title={doubleShiftTitle(doubles.get(r.id))}>Double shift</span>}
+                          {!doubles.has(r.id) && possible.has(r.id) && <span className="tag tag--possible-double" title={POSSIBLE_DOUBLE_TITLE}>Possible double — check</span>}
                         </>
                       )}
                     </td>

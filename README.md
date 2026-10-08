@@ -258,6 +258,13 @@ minutes are one event. Consequences:
   the run; Day + Night + next Day is one double). Each counts as a shift and
   the double once, on the date it started (`reports/doubleShift.js`,
   mirrored in `src/doubleShift.js`).
+  - **Both shifts must have a clock-out** to make a double (an implied
+    changeover time counts). Back-to-back shifts without both — typically a
+    lone stray badge before or after a real shift — are a **possible
+    double**: tagged "Possible double — check" (dashboard, My attendance,
+    Approvals, the detailed report and CSV, and their own Exceptions-report
+    section), never counted as a double, merged into one line or given
+    combined hours. A real one is confirmed with a Day + Night exception.
   - **Day + Night on the same date is shown as one line**, "Day + Night",
     from the Day's clock-in to the Night's clock-out, with the hours between
     them (gaps at the changeover included). It stays on the Day's date even
@@ -311,7 +318,7 @@ job only covers the recent lookback window.
 
 | Role | Sees | Does |
 |---|---|---|
-| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Does not approve attendance** (separation of duties). Signs in with password + authenticator code |
+| System Admin (UCAA ICT) | everything, incl. the audit log and System status | any account (incl. other System Admins, HR, Auditors), crews and cycles, schedules, shift rules. **Can approve any batch** once its shift (or month) has ended, without waiting for escalation; recorded under their name like any approval. Signs in with password + authenticator code |
 | HR | everything | creates Supervisor/Finance/Admin Assistant accounts, crews and cycles, shift rules, schedules, pattern review, approves permanent staff's shifts and escalated shifts |
 
 System Admin safeguards:
@@ -382,6 +389,19 @@ names the auditor.
   the Admin Assistant can approve it too. Dates before 1 Oct 2026
   (`HR_DAILY_FROM` in `sync/approvalLogic.js`) stay in the monthly batches
   (`hr-month`) they were approved in.
+- **Setting a badge aside.** A badge made by mistake (an accidental tap)
+  can be set aside from a record's punch history on the dashboard, or with
+  "Set badge aside" in Approvals. It stays on record, struck through with
+  who set it aside and why, but is left out of every shift calculation; the
+  worker's records around it are worked out again at once (with "Re-approve
+  automatically" if ticked) and it can be restored. HR, the Admin
+  Assistant, the System Admin and the worker's own supervisor can do it
+  (`routes/punches.js`; audited).
+- **Stray badges go to the worker's own supervisor.** A crew worker's
+  record on the *other* shift of a day their crew works, with no exception
+  for it, is routed to their own crew's batch rather than whichever crew is
+  on that shift; a lone guessed badge next to another shift is tagged
+  "Possible stray badge" there, with "Set badge aside" beside it.
 - A backlog can be cleared with `node scripts/approveBacklog.js --month
   YYYY-MM --as <account email>`, or `--from YYYY-MM-DD --to YYYY-MM-DD`
   for a custom range (inclusive; `--to` defaults to `--from`). It's a dry

@@ -31,6 +31,7 @@ app.use('/api', require('./routes/users'));                // accounts (System A
 app.use('/api', require('./routes/attendance'));           // POST /attendance/sync, GET /attendance (raw punches)
 app.use('/api', require('./routes/attendanceExport'));     // GET /attendance/export
 app.use('/api', require('./routes/attendanceSummary'));    // GET /attendance/summary, /attendance/punches
+app.use('/api', require('./routes/punches'));              // POST /punches/:id/set-aside, /punches/:id/restore
 app.use('/api', require('./routes/attendanceReport'));     // GET /attendance/report.pdf
 app.use('/api', require('./routes/reports'));              // report catalog + GET /reports/:type (json, csv, xlsx, pdf)
 app.use('/api', require('./routes/myAttendance'));         // GET /me/attendance (the account holder's own shifts)

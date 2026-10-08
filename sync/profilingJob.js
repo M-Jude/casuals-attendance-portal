@@ -38,6 +38,7 @@ async function loadTenantData(subcontractorName, fromDate, toDate) {
     prisma.attendanceLog.findMany({
       where: {
         casualWorkerId: { in: ids },
+        setAsideAt: null,
         timestamp: { gte: new Date(eatToUtcMs(addDaysStr(fromDate, -1), '00:00')), lte: new Date(eatToUtcMs(addDaysStr(toDate, 2), '12:00')) }
       },
       select: { id: true, casualWorkerId: true, timestamp: true },

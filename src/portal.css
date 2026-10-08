@@ -420,6 +420,7 @@ th.num .th-sort { justify-content: center; }
 .tag--early-out { color: var(--critical); background: var(--critical-bg); }
 /* Day + Night worked on the same date. */
 .tag--double { color: var(--info); background: var(--info-bg); font-size: 11px; padding: 2px 8px; margin-top: 4px; }
+.tag--possible-double { color: var(--warn); background: var(--warn-bg); font-size: 11px; padding: 2px 8px; margin-top: 4px; }
 /* "(+1)" after a double shift's next-day clock-out in report tables. */
 .day-mark { color: var(--info); font-weight: 600; white-space: nowrap; }
 
@@ -1083,7 +1084,7 @@ body.no-scroll { overflow: hidden; }
 
 /* Confirmation dialog (confirm.jsx). */
 .confirm-backdrop {
-  position: fixed; inset: 0; z-index: 900; background: rgba(15, 23, 32, 0.45);
+  position: fixed; inset: 0; z-index: 1100; background: rgba(15, 23, 32, 0.45); /* above the punch-history modal (1000) */
   display: grid; place-items: center; padding: 16px;
 }
 .confirm {
