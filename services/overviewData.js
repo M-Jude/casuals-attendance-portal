@@ -31,7 +31,7 @@ async function loadPeriod({ subcontractorName, visibility = {}, from, to }) {
     prisma.dailyAttendanceSummary.findMany({
       where: { date: { gte: dateOnly(from), lte: dateOnly(to) }, worker: { subcontractorName }, ...visibility },
       select: {
-        id: true, date: true, status: true, hoursWorked: true, lateIn: true, earlyCheckOut: true,
+        id: true, date: true, status: true, hoursWorked: true, lateIn: true, earlyCheckOut: true, checkOut: true, // a double needs both clock-outs
         approvalCrewId: true, approvedAt: true, changedAfterApproval: true,
         worker: { select: { id: true } }, shift: { select: { name: true } }
       }

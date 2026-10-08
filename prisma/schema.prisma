@@ -32,6 +32,11 @@ model AttendanceLog {
   timestamp      DateTime
   rawPayload     Json? // raw BioStar event, kept for debugging/audit
   syncedAt       DateTime     @default(now())
+  // Set aside: a badge made by mistake (e.g. an accidental tap), left out of
+  // every shift calculation but kept and shown. Sync never clears it.
+  setAsideAt     DateTime?
+  setAsideById   Int?
+  setAsideReason String?      @db.Text
 
   @@index([casualWorkerId, timestamp])
 }

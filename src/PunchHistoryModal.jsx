@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import StatusTags from './StatusTags';
 import { isGuessed, GUESSED_TITLE } from './shiftStatus';
+import { reapproveCheckbox, recalcResult, useConfirm } from './confirm';
+import { useToast } from './toast';
 
 function formatDateTime(ts) {
   return new Date(ts).toLocaleString([], {
@@ -18,6 +20,7 @@ function formatDate(dateStr) {
 // Devices here don't label punches, so a punch's role comes from which
 // shift window it fell in (see sync/shiftEngine.js).
 function punchRole(p) {
+  if (p.setAside) return 'Set aside';
   if (p.changeover) return 'Changeover (Day → Night)';
   if (p.usedAsCheckIn && p.usedAsCheckOut) return 'Check-out and next check-in';
   if (p.usedAsCheckIn) return 'Check-in';
@@ -25,10 +28,62 @@ function punchRole(p) {
   return 'Not used (repeat badge)';
 }
 
-export default function PunchHistoryModal({ token, summary, onClose }) {
+// canSetAside: HR, the Admin Assistant, the System Admin and supervisors can
+// set a badge made by mistake aside (or restore it); onChanged reloads the
+// records afterwards.
+export default function PunchHistoryModal({ token, summary, onClose, canSetAside = false, onChanged }) {
   const [punches, setPunches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
+  const toast = useToast();
+
+  async function changeBadge(p, action) {
+    const reason = { current: '' };
+    const day = new Date(new Date(p.timestamp).getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+    const ok = await confirm(action === 'set-aside'
+      ? {
+          title: `Set aside the badge of ${formatDateTime(p.timestamp)}?`,
+          body: (
+            <>
+              <p>It stays on record but is left out of {summary.worker.name}’s shifts, which are worked out again without it — use this for a badge made by mistake (an accidental tap). It can be restored.</p>
+              <label className="field">Why?
+                <input className="input" maxLength={500} placeholder="e.g. Accidental tap in the morning before his Night shift" onChange={(e) => { reason.current = e.target.value; }} />
+              </label>
+            </>
+          ),
+          checkbox: reapproveCheckbox(day),
+          confirmLabel: 'Set aside'
+        }
+      : {
+          title: `Restore the badge of ${formatDateTime(p.timestamp)}?`,
+          body: <p>It was set aside{p.setAside.reason ? `: “${p.setAside.reason}”` : ''}. {summary.worker.name}’s shifts are worked out again with it.</p>,
+          checkbox: reapproveCheckbox(day),
+          confirmLabel: 'Restore'
+        });
+    if (!ok) return;
+    if (action === 'set-aside' && !reason.current.trim()) {
+      toast.error('Say why the badge is being set aside.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/punches/${p.id}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason.current.trim(), autoReapprove: ok.checked === true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      toast.success(`${action === 'set-aside' ? 'Badge set aside' : 'Badge restored'}.${recalcResult(data.recalculated)}`);
+      onChanged?.();
+    } catch (err) {
+      toast.error(`Couldn’t ${action === 'set-aside' ? 'set the badge aside' : 'restore the badge'}: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -163,11 +218,21 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           ) : (
             <ul className="punch-list">
               {punches.map((p) => {
-                const used = p.usedAsCheckIn || p.usedAsCheckOut || p.changeover;
+                const used = !p.setAside && (p.usedAsCheckIn || p.usedAsCheckOut || p.changeover);
                 return (
-                  <li key={p.id} className={`punch-item ${used ? 'punch-item--used' : 'punch-item--ignored'}`}>
+                  <li key={p.id} className={`punch-item ${p.setAside ? 'punch-item--aside' : used ? 'punch-item--used' : 'punch-item--ignored'}`}>
                     <span className="punch-item__time mono">{formatDateTime(p.timestamp)}</span>
+                    {p.setAside && (
+                      <span className="punch-item__why" title={`Set aside ${formatDateTime(p.setAside.at)}${p.setAside.by ? ` by ${p.setAside.by}` : ''}`}>
+                        {p.setAside.reason}{p.setAside.by ? ` — ${p.setAside.by}` : ''}
+                      </span>
+                    )}
                     <span className="punch-item__tag">{punchRole(p)}</span>
+                    {canSetAside && (
+                      <button className="btn btn--link punch-item__action" disabled={busy} onClick={() => changeBadge(p, p.setAside ? 'restore' : 'set-aside')}>
+                        {p.setAside ? 'Restore' : 'Set aside'}
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -303,6 +368,14 @@ export default function PunchHistoryModal({ token, summary, onClose }) {
           background: var(--warn-bg);
           border-color: var(--warn-line);
         }
+        .punch-item--aside .punch-item__time { text-decoration: line-through; color: var(--muted); }
+        .punch-item--aside .punch-item__tag {
+          color: var(--muted);
+          background: var(--panel-2);
+          border-color: var(--line-strong);
+        }
+        .punch-item__why { font-size: 12px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+        .punch-item__action { font-size: 12px; padding: 0; }
         .mono {
           font-family: var(--font-num); font-variant-numeric: tabular-nums;
         }

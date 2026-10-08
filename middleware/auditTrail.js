@@ -116,6 +116,9 @@ rule('POST', '/api/pattern-review/:workerId/:action', {
   category: 'schedule', action: 'pattern.review', entityType: 'worker', entity: (p) => p.workerId,
   summary: async ({ params, body }) => `${params.action === 'accept' ? 'Accepted' : 'Dismissed'} the suggested pattern for ${await nameOfWorker(params.workerId)}${params.action === 'accept' && body.autoReapprove === true ? ', re-approving changed records automatically' : ''}`
 });
+// Summaries come from the route (res.locals.audit): the badge's time and the reason.
+rule('POST', '/api/punches/:id/set-aside', { category: 'attendance', action: 'punch.set-aside', entityType: 'punch', entity: (p) => p.id, summary: async ({ params }) => `Set aside badge #${params.id}` });
+rule('POST', '/api/punches/:id/restore', { category: 'attendance', action: 'punch.restore', entityType: 'punch', entity: (p) => p.id, summary: async ({ params }) => `Restored badge #${params.id}` });
 rule('PUT', '/api/exceptions', {
   category: 'schedule', action: 'exception.save', entityType: 'worker', entity: (p, b) => b.workerId,
   summary: async ({ body }) => {

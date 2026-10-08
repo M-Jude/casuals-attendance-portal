@@ -10,7 +10,7 @@
 //
 // No database or HTTP here — see routes/reports.js for loading.
 
-const { doubleShiftRuns, normalizeDoubles, mergeDoubles } = require('./doubleShift');
+const { doubleShiftRuns, possibleDoubles, normalizeDoubles, mergeDoubles } = require('./doubleShift');
 
 const DAY_MS = 24 * 3600 * 1000;
 const EAT_OFFSET_MS = 3 * 3600 * 1000;
@@ -234,6 +234,8 @@ const round2 = (n) => Math.round(n * 100) / 100;
 // shifts show the pair as one merged line (mergeDoubles()).
 // ctx.doubles is set by buildReport().
 const runOf = (ctx, r) => (worked(r) && ctx.doubles?.get(r.id)) || null;
+// Back to back but not both clocked out — flagged, never counted (ctx.possibleDoubles).
+const possibleOf = (ctx, r) => (worked(r) && ctx.possibleDoubles?.get(r.id)) || null;
 const isDouble = (ctx, r) => !!runOf(ctx, r);
 // Double shifts among `rows` that start between from and to (default: the
 // report period) — so one that runs past midnight on the last day of a
@@ -280,6 +282,7 @@ function flagsOf(ctx, r) {
   const run = runOf(ctx, r.parts ? r.parts[0] : r);
   if (r.parts) f.push(`Double shift - 2 shifts (${run ? run.label : 'Day + Night'})`);
   else if (run) f.push(`Double shift (${run.label})`);
+  else if (possibleOf(ctx, r)) f.push(`Possible double - check (${possibleOf(ctx, r).label})`);
   if (r.hasMultiplePunches) f.push('Multiple punches');
   if (r.checkInImplied || r.checkOutImplied) f.push('Implied time');
   if (r.source === 'unscheduled') f.push(isGuessed(r) ? 'Unscheduled, shift guessed' : 'Unscheduled');
@@ -716,6 +719,18 @@ function buildExceptions(ctx, rows) {
     // Implied times are only ever at a changeover between the shifts.
     changeover: rs.some((r) => r.checkInImplied || r.checkOutImplied) ? 'No badge - split at handover' : 'Badged'
   }));
+  // Back to back, but one shift has no clock-out: not counted as a double.
+  const possibleRuns = new Map();
+  for (const r of sorted) {
+    const p = possibleOf(ctx, r);
+    if (p && p.startDate >= ctx.period.from && p.startDate <= ctx.period.to) possibleRuns.set(p.id, p);
+  }
+  const possible = [...possibleRuns.values()].map(({ records: rs, label }) => ({
+    ...base(rs[0]),
+    shift: label,
+    detail: rs.map((r) => `${r.shift.name} ${r.checkIn ? eatClock(r.checkIn) : '?'}-${r.checkOut ? eatClock(r.checkOut) : '?'}`).join(' + '),
+    missing: rs.filter((r) => !r.checkOut).map((r) => `${r.shift.name} clock-out`).join(', ')
+  }));
 
   const sections = [
     late.length && {
@@ -749,6 +764,11 @@ function buildExceptions(ctx, rows) {
       columns: [...lead.map((c) => (c.key === 'shift' ? { ...c, width: 1.5 } : c)), COL.in, COL.out, { ...COL.hours, label: 'Total hours' },
         { key: 'changeover', label: 'Changeover', type: 'text', width: 1.8 }],
       rows: doubles, totals: null
+    },
+    possible.length && {
+      title: 'Possible double shifts - check', note: `${possible.length} back to back with another shift but missing a clock-out - not counted as doubles. Often a stray badge: set it aside, or record a Day + Night exception if both were worked.`,
+      columns: [...lead.map((c) => (c.key === 'shift' ? { ...c, width: 1.5 } : c)), { key: 'detail', label: 'Shifts', type: 'text', width: 2.6 }, { key: 'missing', label: 'Missing', type: 'text', width: 1.4 }],
+      rows: possible, totals: null
     }
   ].filter(Boolean);
 
@@ -778,7 +798,7 @@ function buildExceptions(ctx, rows) {
       { label: 'Early check-outs', value: String(earlyOut.length), sub: 'left before shift end', tone: 'warn' },
       { label: 'Multiple punches', value: String(multi.length), sub: 'extra badges mid-shift', tone: 'grey' },
       { label: 'Unscheduled', value: String(unscheduled.length), sub: 'outside the schedule', tone: 'navy' },
-      { label: 'Double shifts', value: String(doubles.length), sub: 'two shifts back to back', tone: 'teal' }
+      { label: 'Double shifts', value: String(doubles.length), sub: possible.length ? `two shifts back to back · ${possible.length} possible, to check` : 'two shifts back to back', tone: 'teal' }
     ],
     sections
   };
@@ -1112,7 +1132,7 @@ function buildReport(type, ctx, data, period) {
   const wide = normalizeDoubles(ctx.doubleRows || data);
   const byId = new Map(wide.map((r) => [r.id, r]));
   const rows = ctx.doubleRows ? data.map((r) => byId.get(r.id) || r) : wide;
-  return finish(type, ctx, builder({ ...ctx, period, doubles: doubleShiftRuns(wide) }, rows, period), period);
+  return finish(type, ctx, builder({ ...ctx, period, doubles: doubleShiftRuns(wide), possibleDoubles: possibleDoubles(wide) }, rows, period), period);
 }
 
 function finish(type, ctx, model, period) {

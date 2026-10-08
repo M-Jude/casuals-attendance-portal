@@ -59,6 +59,12 @@ check('Approval: permanent Day worker → HR (null)', approvalCrewFor({ resolver
 // 09-05: crew 1 is on Night-off? 09-05 is day 5 → off for crew 1; crew 2 (anchor 09-03) is on day 3 → Night.
 check('Approval: crew-1 worker covering the Night on their off day → crew 2 (on Night that date)', approvalCrewFor({ resolver: r, workerId: 10, dateStr: '2026-09-05', shiftName: 'Night', tenantCrewIds: crewIds }) === 2);
 check('Approval: unassigned worker on a shift one crew is rostered on → that crew', approvalCrewFor({ resolver: r, workerId: 99, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: crewIds }) === 2);
+// 09-03: crew 1 is on Night, crew 2 on Day. A crew-1 worker with a Day
+// record that date (e.g. a stray morning badge before their Night) goes to
+// their own supervisor, not crew 2's.
+check('Approval: off-shift record on a day their crew works (stray badge) → their own crew', approvalCrewFor({ resolver: r, workerId: 10, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: crewIds }) === 1);
+const withSwap = buildResolver({ schedules, rotations, exceptions: [...exceptions, { casualWorkerId: 10, date: d('2026-09-03'), shifts: 'Day' }], workers });
+check('Approval: an exception for the other shift (a swap) → the crew on that shift', approvalCrewFor({ resolver: withSwap, workerId: 10, dateStr: '2026-09-03', shiftName: 'Day', tenantCrewIds: crewIds }) === 2);
 
 // --- No shifts expected before a worker's first punch ---
 {

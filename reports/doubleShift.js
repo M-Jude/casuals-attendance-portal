@@ -11,6 +11,14 @@
 //   Night + the next morning's Day — still a double shift, but two lines,
 //     each on its own date.
 //
+// Only counted when BOTH shifts have a clock-out — the first one's shows it
+// ended at (or after) the changeover rather than being a lone stray badge,
+// the second one's that it was worked through. Back-to-back shifts without
+// both are a "possible double" (possibleDoubles): flagged to check, never
+// counted as a double, and never merged into one line or one set of hours.
+// A real one is confirmed by recording the Day + Night exception, which
+// gives both halves their clock-outs.
+//
 // Pure, no database. Mirrored by src/doubleShift.js for the portal — keep the
 // two in sync.
 
@@ -31,37 +39,51 @@ const isNight = (r) => r.shift.name === 'Night';
 // are back to back when their numbers are consecutive.
 const shiftSlot = (r) => Math.round(Date.parse(`${dateStrOf(r.date)}T00:00:00Z`) / DAY_MS) * 2 + (isNight(r) ? 1 : 0);
 
-/**
- * Every double shift in `rows` (stored shift records). Returns Map(record id
- * -> run), a run being { id, startDate, records (in time order), label },
- * label e.g. "Day + Night" or "Night + next Day". A no-show breaks a run; a
- * longer run (Day + Night + next Day) is one double shift.
- */
-function doubleShiftRuns(rows) {
+// Two back-to-back worked shifts make a double only when both have a
+// clock-out (an implied one at a badge-less changeover counts: the worker
+// badged in before it and out after it).
+const joined = (a, b) => !!a.checkOut && !!b.checkOut;
+
+const runValue = (run) => ({
+  id: `${run[0].worker.id}|${shiftSlot(run[0])}`,
+  startDate: dateStrOf(run[0].date),
+  records: run,
+  label: run.map((r, i) => (i > 0 && !isNight(r) ? `next ${r.shift.name}` : r.shift.name)).join(' + ')
+});
+
+// Each worker's worked shifts in time order.
+function workedByWorker(rows) {
   const byWorker = new Map();
   for (const r of rows) {
     if (!worked(r)) continue;
     if (!byWorker.has(r.worker.id)) byWorker.set(r.worker.id, []);
     byWorker.get(r.worker.id).push(r);
   }
+  for (const list of byWorker.values()) list.sort((a, b) => shiftSlot(a) - shiftSlot(b));
+  return byWorker.values();
+}
+
+/**
+ * Every double shift in `rows` (stored shift records). Returns Map(record id
+ * -> run), a run being { id, startDate, records (in time order), label },
+ * label e.g. "Day + Night" or "Night + next Day". A no-show, or a shift
+ * without a clock-out, breaks a run; a longer run (Day + Night + next Day)
+ * is one double shift.
+ */
+function doubleShiftRuns(rows) {
   const out = new Map();
-  for (const list of byWorker.values()) {
-    list.sort((a, b) => shiftSlot(a) - shiftSlot(b));
+  for (const list of workedByWorker(rows)) {
     let run = [list[0]];
     const close = () => {
       if (run.length < 2) return;
-      const value = {
-        id: `${run[0].worker.id}|${shiftSlot(run[0])}`,
-        startDate: dateStrOf(run[0].date),
-        records: run,
-        label: run.map((r, i) => (i > 0 && !isNight(r) ? `next ${r.shift.name}` : r.shift.name)).join(' + ')
-      };
+      const value = runValue(run);
       for (const r of run) out.set(r.id, value);
     };
     for (let i = 1; i < list.length; i++) {
-      const gap = shiftSlot(list[i]) - shiftSlot(run[run.length - 1]);
+      const prev = run[run.length - 1];
+      const gap = shiftSlot(list[i]) - shiftSlot(prev);
       if (gap === 0) continue; // the same shift twice — not expected
-      if (gap === 1) run.push(list[i]);
+      if (gap === 1 && joined(prev, list[i])) run.push(list[i]);
       else { close(); run = [list[i]]; }
     }
     close();
@@ -69,7 +91,28 @@ function doubleShiftRuns(rows) {
   return out;
 }
 
-// Same-date Day + Night pairs, both worked: Map(record id -> { day, night }).
+/**
+ * Back-to-back worked shifts that are NOT a double because one of them has
+ * no clock-out — e.g. a stray morning badge before a Night. Flag to check;
+ * never counted or merged. Map(record id -> { id, startDate, records: [a,
+ * b], label }). A second shift still in progress isn't flagged yet.
+ */
+function possibleDoubles(rows) {
+  const out = new Map();
+  for (const list of workedByWorker(rows)) {
+    for (let i = 1; i < list.length; i++) {
+      const [a, b] = [list[i - 1], list[i]];
+      if (shiftSlot(b) - shiftSlot(a) !== 1 || joined(a, b) || b.status === 'in-progress') continue;
+      const value = runValue([a, b]);
+      out.set(a.id, value);
+      out.set(b.id, value);
+    }
+  }
+  return out;
+}
+
+// Same-date Day + Night pairs, both worked and both clocked out:
+// Map(record id -> { day, night }).
 function sameDatePairs(rows) {
   const byKey = new Map();
   for (const r of rows) {
@@ -80,7 +123,7 @@ function sameDatePairs(rows) {
   }
   const out = new Map();
   for (const p of byKey.values()) {
-    if (p.day && p.night) { out.set(p.day.id, p); out.set(p.night.id, p); }
+    if (p.day && p.night && joined(p.day, p.night)) { out.set(p.day.id, p); out.set(p.night.id, p); }
   }
   return out;
 }
@@ -198,4 +241,4 @@ function mergeDoubles(rows) {
 // A merged line, or a plain record, as its stored shift records.
 const recordsOf = (lines) => lines.flatMap((l) => l.parts || [l]);
 
-module.exports = { doubleShiftRuns, sameDatePairs, pairHours, normalizeDoubles, mergeDoubles, recordsOf, shiftSlot };
+module.exports = { doubleShiftRuns, possibleDoubles, sameDatePairs, pairHours, normalizeDoubles, mergeDoubles, recordsOf, shiftSlot };

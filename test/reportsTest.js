@@ -209,7 +209,10 @@ const week = resolvePeriod({ period: 'week', date: '2026-09-21' });
 // --- Double shifts across midnight: Night then the next morning's Day ---
 {
   const W3 = { id: 3, name: 'Cheptoo Ann', biostarUserId: 'C0032026' };
-  const worked = (date, shift, hours) => row(W3, date, shift, { status: 'on-time', hoursWorked: hours, checkIn: eat(date, shift === DAY ? '08:00' : '17:00') });
+  const worked = (date, shift, hours) => {
+    const checkIn = eat(date, shift === DAY ? '08:00' : '17:00');
+    return row(W3, date, shift, { status: 'on-time', hoursWorked: hours, checkIn, checkOut: new Date(checkIn.getTime() + hours * 3600000) });
+  };
   const before = worked('2026-09-20', NIGHT, 15);  // previous week
   const mon = worked('2026-09-21', DAY, 9);        // continues Sunday night's double
   const tue = worked('2026-09-22', NIGHT, 15);
@@ -240,6 +243,45 @@ const week = resolvePeriod({ period: 'week', date: '2026-09-21' });
   check('Across midnight: Day + Night + next Day is one double shift', ch.rows.length === 1 && ch.rows[0].shift === 'Day + Night + next Day' && ch.rows[0].hours === 33);
   const gap = buildReport('summary', ctx, [worked('2026-09-24', NIGHT, 15), worked('2026-09-26', DAY, 9)], week).sections[0].rows[0];
   check('Across midnight: a Night and a Day two days later is not a double', gap.double === 0);
+}
+
+// --- Possible doubles: back to back, but one shift has no clock-out ---
+// (the Kugonza case: an accidental 07:22 badge before his Night)
+{
+  const W5 = { id: 5, name: 'Kugonza Edward', biostarUserId: 'C0052026' };
+  const stray = row(W5, '2026-09-23', DAY, { checkIn: eat('2026-09-23', '07:22'), status: 'no-checkout', source: 'unscheduled' });
+  const night = row(W5, '2026-09-23', NIGHT, { checkIn: eat('2026-09-23', '17:53'), checkOut: eat('2026-09-24', '08:54'), hoursWorked: 15.02, status: 'late', lateIn: true });
+  const data = [stray, night];
+  const s = buildReport('summary', ctx, data, week).sections[0].rows[0];
+  check('Possible double: not counted as a double, still two records', s.double === 0 && s.worked === 2);
+  const det = buildReport('detailed', ctx, data, week).sections[0].rows;
+  check('Possible double: two lines, not merged; the Night keeps its own hours', det.length === 2 && det.find((x) => x.shift === 'Night').hours === 15.02);
+  check('Possible double: both lines flagged to check', det.every((x) => x.flags.includes('Possible double - check (Day + Night)')));
+  const ex = buildReport('exceptions', ctx, data, week).sections;
+  check('Possible double: its own Exceptions section, not under Double shifts', !ex.find((x) => x.title === 'Double shifts')
+    && ex.find((x) => x.title === 'Possible double shifts - check').rows[0].missing === 'Day clock-out');
+  const h = buildReport('hours', ctx, data, week).sections[0].rows[0];
+  check('Possible double: no double-shift hours', h.double === 0 && h.doubleHours === 0);
+
+  // Night with no clock-out, then the next morning's Day.
+  const n2 = row(W5, '2026-09-25', NIGHT, { checkIn: eat('2026-09-25', '17:00'), status: 'no-checkout' });
+  const d2 = row(W5, '2026-09-26', DAY, { checkIn: eat('2026-09-26', '08:00'), checkOut: eat('2026-09-26', '17:00'), hoursWorked: 9, status: 'on-time' });
+  check('Possible double: Night without a clock-out + next Day is not a double', buildReport('summary', ctx, [n2, d2], week).sections[0].rows[0].double === 0);
+
+  // Both clocked out: a double, as before.
+  const day = row(W5, '2026-09-27', DAY, { checkIn: eat('2026-09-27', '07:58'), checkOut: eat('2026-09-27', '17:05'), hoursWorked: 9.12, status: 'on-time' });
+  const n3 = row(W5, '2026-09-27', NIGHT, { checkIn: eat('2026-09-27', '17:05'), checkOut: eat('2026-09-28', '08:00'), hoursWorked: 14.92, status: 'on-time' });
+  check('Both shifts clocked out: still a double', buildReport('summary', ctx, [day, n3], week).sections[0].rows[0].double === 1);
+}
+
+// --- possibleDoubles(): a second shift still in progress isn't flagged yet ---
+{
+  const { possibleDoubles } = require('../reports/doubleShift');
+  const W6 = { id: 6, name: 'X', biostarUserId: 'C0062026' };
+  const d = row(W6, '2026-09-23', DAY, { checkIn: eat('2026-09-23', '08:00'), checkOut: eat('2026-09-23', '17:00'), status: 'on-time' });
+  const n = row(W6, '2026-09-23', NIGHT, { checkIn: eat('2026-09-23', '17:00'), status: 'in-progress' });
+  check('possibleDoubles: a Night still in progress is not flagged yet', possibleDoubles([d, n]).size === 0);
+  check('possibleDoubles: once it ends without a clock-out, it is', possibleDoubles([d, { ...n, status: 'no-checkout' }]).size === 2);
 }
 
 // --- Column choice ---

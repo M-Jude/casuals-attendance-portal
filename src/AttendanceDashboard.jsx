@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import PunchHistoryModal from './PunchHistoryModal';
 import AttendanceAnalytics from './AttendanceAnalytics';
 import { statusTags, isGuessed, GUESSED_TITLE } from './shiftStatus';
-import { doubleShiftRuns, doubleShiftTitle, normalizeDoubles, mergeDoubles, recordsOf } from './doubleShift';
+import { doubleShiftRuns, doubleShiftTitle, possibleDoubles, POSSIBLE_DOUBLE_TITLE, normalizeDoubles, mergeDoubles, recordsOf } from './doubleShift';
 import StatusTags from './StatusTags';
 import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
@@ -266,6 +266,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
   const records = useMemo(() => normalizeDoubles(rows), [rows]);
   const lines = useMemo(() => mergeDoubles(records), [records]);
   const doubleShifts = useMemo(() => doubleShiftRuns(records), [records]);
+  const possibleDoubleShifts = useMemo(() => possibleDoubles(records), [records]);
   const isDoubleRow = useCallback((r) => !!r.parts || doubleShifts.has(r.id), [doubleShifts]);
 
   const visibleRows = useMemo(() => {
@@ -368,6 +369,7 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
             <>
               <span className={`shift-tag shift-tag--${row.shift.name === 'Night' ? 'night' : 'day'}`}>{row.shift.name}</span>
               {isDouble && <div><span className="tag tag--double" title={doubleShiftTitle(doubleShifts.get(row.id))}>Double shift</span></div>}
+              {!isDouble && possibleDoubleShifts.has(row.id) && <div><span className="tag tag--possible-double" title={POSSIBLE_DOUBLE_TITLE}>Possible double — check</span></div>}
             </>
           )}
           {note && <div className={`dash__sub ${note.warn ? 'dash__sub--warn' : ''}`} title={note.title}>{note.text}</div>}
@@ -566,6 +568,8 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
           token={token}
           summary={selectedRow}
           onClose={() => setSelectedRow(null)}
+          canSetAside={['sysadmin', 'hr', 'admin_assistant', 'supervisor'].includes(user.role)}
+          onChanged={() => { setSelectedRow(null); loadSummaries(); }}
         />
       )}
 

@@ -4,7 +4,7 @@ const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { canApprove, escalationDueAt, unitLabel } = require('../sync/approvalLogic');
 const { dateStrOf } = require('../sync/scheduleResolver');
-const { normalizeDoubles } = require('../reports/doubleShift');
+const { normalizeDoubles, possibleDoubles } = require('../reports/doubleShift');
 const { accountNameResolver } = require('../services/accountNames');
 const { approveUnit, MAX_COMMENT } = require('../services/approveUnit');
 
@@ -106,17 +106,33 @@ async function loadVisibleUnit(user, id) {
 // `double`: the other shift (which its own supervisor approves), this
 // shift's share of the hours and the double's total, first clock-in and
 // last clock-out — so the approver can see the worker really worked both.
+// Also marks `possibleDouble` (back to back with another shift but one has
+// no clock-out — not counted) and `possibleStray` (that, where this record is
+// a lone guessed badge: most likely a badge made by mistake, which the
+// approver can set aside; strayPunchId is it).
 async function describeDoubles(rows, key) {
   if (rows.length === 0) return;
   const dates = rows.map((r) => r.date.getTime());
+  const DAY = 24 * 3600 * 1000;
   const partners = await prisma.dailyAttendanceSummary.findMany({
     where: {
       casualWorkerId: { in: [...new Set(rows.map((r) => r.casualWorkerId))] },
-      date: { gte: new Date(Math.min(...dates)), lte: new Date(Math.max(...dates)) },
+      date: { gte: new Date(Math.min(...dates) - DAY), lte: new Date(Math.max(...dates) + DAY) },
       NOT: { approvalKey: key }
     },
     include: { worker: { select: { id: true, name: true, biostarUserId: true } }, shift: { select: { id: true, name: true } } }
   });
+  const possible = possibleDoubles([...rows, ...partners]);
+  for (const r of rows) {
+    const p = possible.get(r.id);
+    if (!p) continue;
+    r.possibleDouble = p.label;
+    const ids = Array.isArray(r.punchIds) ? r.punchIds : [];
+    if (r.source === 'unscheduled' && (!r.checkIn || !r.checkOut) && ids.length === 1) {
+      r.possibleStray = true;
+      r.strayPunchId = ids[0];
+    }
+  }
   const normalized = new Map(normalizeDoubles([...rows, ...partners]).map((r) => [r.id, r]));
   const crewIds = [...new Set(partners.map((p) => p.approvalCrewId).filter(Boolean))];
   const crews = new Map((await prisma.crew.findMany({ where: { id: { in: crewIds } } })).map((c) => [c.id, c.name]));
