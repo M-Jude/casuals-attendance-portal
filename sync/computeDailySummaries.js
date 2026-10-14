@@ -133,11 +133,21 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
 
   const fresh = [];
   const units = new Map();
+  // Dates judged against a guess: no confirmed schedule and no exception —
+  // the nightly profiler's suggested pattern (or nothing) decides what's
+  // expected, and that can change any night. Approved history on these
+  // dates only changes when the badges do (see planReconcile's guard).
+  const guessedDates = new Set();
 
   for (const worker of workers) {
     const tenantCrewIds = crews.filter((c) => c.subcontractorName === worker.subcontractorName).map((c) => c.id);
     const expectedFor = startAtFirstPunch(resolver.expectedFor(worker.id), firstPunchMs.get(worker.id) ?? null, shiftsByName);
     const workerPunches = punchesByWorker.get(worker.id);
+    for (let d = fromDateStr; d <= toDateStr; d = addDaysStr(d, 1)) {
+      const confirmed = resolver.scheduleOn(worker.id, d);
+      const hasException = resolver.expectedFor(worker.id)(d).source === 'exception';
+      if ((!confirmed || confirmed.type === 'unassigned') && !hasException) guessedDates.add(`${worker.id}|${d}`);
+    }
 
     // First pass over the pattern window: the worker's complete shifts (both
     // badges) say which shift they usually work. A lone unscheduled badge on
@@ -186,14 +196,23 @@ async function computeSummaries(fromDateStr, toDateStr, { workerIds, now = Date.
     }
   }
 
-  const plan = planReconcile(existing, fresh);
+  const activePunchIds = new Set(punches.map((p) => p.id));
+  const approvedKeys = new Set((await prisma.approvalUnit.findMany({
+    where: { key: { in: [...new Set([...existing.map((e) => e.approvalKey), ...fresh.map((f) => f.approvalKey)])] }, approvedAt: { not: null } },
+    select: { key: true }
+  })).map((u) => u.key));
+  const plan = planReconcile(existing, fresh, {
+    guessed: (r) => guessedDates.has(`${r.casualWorkerId}|${r.date instanceof Date ? r.date.toISOString().slice(0, 10) : r.date}`),
+    active: (id) => activePunchIds.has(id),
+    approvedKey: (key) => approvedKeys.has(key)
+  });
 
   // Skip rewriting unapproved rows whose values didn't change — the hourly
   // run would otherwise touch every row in the lookback window.
   const existingById = new Map(existing.map((e) => [e.id, e]));
   const updates = plan.updates.filter(({ id, data }) => {
     const e = existingById.get(id);
-    return !sameAttendance(e, data) || JSON.stringify(e.punchIds) !== JSON.stringify(data.punchIds) || e.approvalCrewId !== data.approvalCrewId;
+    return !sameAttendance(e, data) || e.source !== data.source || JSON.stringify(e.punchIds) !== JSON.stringify(data.punchIds) || e.approvalCrewId !== data.approvalCrewId;
   });
 
   const computedAt = new Date(now);

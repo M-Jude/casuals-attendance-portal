@@ -9,9 +9,12 @@ const ESCALATE_AFTER_MS = 48 * 60 * 60 * 1000;
 const REMIND_EVERY_MS = 24 * 60 * 60 * 1000;
 
 // Fields that make up a row's reported attendance. A recompute that changes
-// any of these on an approved row needs re-approval.
+// any of these on an approved row needs re-approval. Not `source` (the
+// label: scheduled, exception, "Schedule not confirmed", unscheduled): with
+// the same times and status it's the same shift, so a label change is
+// brought up to date without reopening anything (plan.relabels).
 const COMPARED_FIELDS = [
-  'source', 'checkIn', 'checkOut', 'checkInImplied', 'checkOutImplied', 'status', 'lateIn',
+  'checkIn', 'checkOut', 'checkInImplied', 'checkOutImplied', 'status', 'lateIn',
   'earlyCheckOut', 'hasMultiplePunches', 'hoursWorked', 'regularHours', 'approvalKey'
 ];
 
@@ -22,18 +25,10 @@ function normaliseStatus(status) {
   return status === 'in-progress' ? 'no-checkout' : status;
 }
 
-// A shift judged against a worker's profiled pattern ("suggested") that HR
-// then confirms as their schedule is the same shift — only the label
-// changes, so it mustn't reopen an approved shift either.
-function normaliseSource(source) {
-  return source === 'suggested' ? 'schedule' : source;
-}
-
 function comparable(field, value) {
   if (value === null || value === undefined) return null;
   if (field === 'checkIn' || field === 'checkOut') return new Date(value).getTime();
   if (field === 'status') return normaliseStatus(value);
-  if (field === 'source') return normaliseSource(value);
   return value;
 }
 
@@ -53,26 +48,64 @@ function rowKey(r) {
 // Unapproved rows are simply replaced. Approved rows are never overwritten:
 // a difference is parked in pendingValues and the row flagged, and its
 // approval unit reopened.
-function planReconcile(existing, fresh) {
+//
+// guard (optional) protects approved history from guesses — dates where the
+// worker has no confirmed schedule or exception, so they're judged against
+// the nightly profiler's suggested pattern, which can change any night:
+//   guard.guessed(row)    — the row's date is judged against a guess
+//   guard.active(punchId) — the badge still counts (not set aside or gone)
+//   guard.approvedKey(k)  — batch k has been approved before
+// On such dates, an approved row whose badges are unchanged is kept as
+// approved (a held change on it is dropped), and a new row the guess adds
+// to an approved batch with no new badges (e.g. an absence the guess
+// implies) isn't added. A badge that's new, set aside or removed still
+// counts as a change.
+function planReconcile(existing, fresh, guard = null) {
   const existingByKey = new Map(existing.map((r) => [rowKey(r), r]));
-  // relabels: approved rows whose only difference is suggested -> schedule;
-  // the label is brought up to date without touching the approval.
+  // relabels: approved rows whose only difference is the label (source);
+  // brought up to date without touching the approval.
   const plan = { creates: [], updates: [], deletes: [], flags: [], clears: [], relabels: [], reopenKeys: new Set() };
+
+  // Badges already in this worker's approved rows, per worker.
+  const approvedPunches = new Map();
+  for (const e of existing) {
+    if (!e.approvedAt) continue;
+    if (!approvedPunches.has(e.casualWorkerId)) approvedPunches.set(e.casualWorkerId, new Set());
+    for (const id of punchesOf(e)) approvedPunches.get(e.casualWorkerId).add(id);
+  }
+  const guessOnly = {
+    // An approved row the guess would change without any badge changing.
+    keep: (e, f) => !!guard && guard.guessed(e)
+      && (f ? samePunches(e, f) : punchesOf(e).every((id) => guard.active(id))),
+    // A row the guess would add to an approved batch with no new badges.
+    skip: (f) => !!guard && guard.guessed(f) && guard.approvedKey(f.approvalKey)
+      && punchesOf(f).every((id) => approvedPunches.get(f.casualWorkerId)?.has(id))
+  };
+  const keepApproved = (e) => {
+    if (e.changedAfterApproval) {
+      plan.clears.push(e.id);
+      plan.reopenKeys.add(e.approvalKey); // re-checked: may be fully approved again
+    }
+  };
 
   for (const f of fresh) {
     const e = existingByKey.get(rowKey(f));
     existingByKey.delete(rowKey(f));
+    if ((!e || !e.approvedAt) && guessOnly.skip(f)) {
+      // Not added — and one added earlier, before this guard, is taken out.
+      if (e) { plan.deletes.push(e.id); plan.reopenKeys.add(e.approvalKey); }
+      continue;
+    }
     if (!e) {
       plan.creates.push(f);
       plan.reopenKeys.add(f.approvalKey);
     } else if (!e.approvedAt) {
       plan.updates.push({ id: e.id, data: f });
     } else if (sameAttendance(e, f)) {
-      if (e.changedAfterApproval) {
-        plan.clears.push(e.id);
-        plan.reopenKeys.add(e.approvalKey); // re-checked: may be fully approved again
-      }
+      keepApproved(e);
       if (e.source !== f.source) plan.relabels.push({ id: e.id, source: f.source });
+    } else if (guessOnly.keep(e, f)) {
+      keepApproved(e);
     } else {
       plan.flags.push({ id: e.id, pendingValues: f });
       plan.reopenKeys.add(e.approvalKey);
@@ -82,12 +115,20 @@ function planReconcile(existing, fresh) {
 
   for (const e of existingByKey.values()) {
     if (!e.approvedAt) plan.deletes.push(e.id);
+    else if (guessOnly.keep(e, null)) keepApproved(e);
     else {
       plan.flags.push({ id: e.id, pendingValues: { deleted: true } });
       plan.reopenKeys.add(e.approvalKey);
     }
   }
   return plan;
+}
+
+const punchesOf = (r) => (Array.isArray(r.punchIds) ? r.punchIds : []);
+function samePunches(a, b) {
+  const x = new Set(punchesOf(a));
+  const y = punchesOf(b);
+  return x.size === new Set(y).size && y.every((id) => x.has(id));
 }
 
 function crewUnitKey(crewId, dateStr, shiftId) {
