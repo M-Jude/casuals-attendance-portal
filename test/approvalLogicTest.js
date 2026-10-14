@@ -93,6 +93,40 @@ function stored(overrides = {}) {
   check('Supervisors cannot approve the HR month', !canApprove({ role: 'supervisor', crewId: 3 }, month, Date.parse('2026-10-01T06:00:00Z')).ok);
 }
 
+// --- A guessed pattern never changes approved history (the Atimango case) ---
+// A worker with no schedule: the nightly profiler starts judging them as
+// Permanent Day. Their approved shifts move batch, absences appear in
+// batches already approved — none of it is new information.
+{
+  const guard = (activeIds = [10, 11, 12], approved = ['crew:3:2026-10-07:1', 'hr:A:2026-10-06:1']) => ({
+    guessed: () => true,
+    active: (id) => activeIds.includes(id),
+    approvedKey: (k) => approved.includes(k)
+  });
+  const worked = stored({ id: 1, date: new Date('2026-10-07T00:00:00Z'), approvedAt: new Date(), source: 'unscheduled', approvalKey: 'crew:3:2026-10-07:1', punchIds: [10, 11] });
+  const moved = row({ date: '2026-10-07', source: 'suggested', approvalKey: 'hr:A:2026-10-07:1', punchIds: [10, 11] });
+  const p = planReconcile([worked], [moved], guard());
+  check('Guess moves an approved shift to another batch, same badges: kept as approved, not reopened', p.flags.length === 0 && p.reopenKeys.size === 0);
+  const absent = row({ date: '2026-10-06', status: 'no-show', checkIn: null, checkOut: null, hoursWorked: null, regularHours: null, source: 'suggested', approvalKey: 'hr:A:2026-10-06:1', punchIds: [] });
+  const p2 = planReconcile([worked], [moved, absent], guard());
+  check('Guess implies an absence in an already-approved batch: not added', p2.creates.length === 0 && !p2.reopenKeys.has('hr:A:2026-10-06:1'));
+  const today = { ...absent, date: '2026-10-14', approvalKey: 'hr:A:2026-10-14:1' };
+  check('…but in a batch not yet approved (today), it is', planReconcile([], [today], guard()).creates.length === 1);
+  const addedBefore = stored({ id: 2, date: new Date('2026-10-06T00:00:00Z'), status: 'no-show', checkIn: null, checkOut: null, source: 'suggested', approvalKey: 'hr:A:2026-10-06:1', punchIds: [] });
+  const p3 = planReconcile([worked, addedBefore], [moved, absent], guard());
+  check('An absence a guess added earlier (unapproved) is taken out, and its batch re-checked', p3.deletes.includes(2) && p3.reopenKeys.has('hr:A:2026-10-06:1'));
+  const held = { ...worked, changedAfterApproval: true, pendingValues: moved };
+  const p4 = planReconcile([held], [moved], guard());
+  check('A change a guess already held on an approved row is dropped, its batch re-checked', p4.clears.includes(1) && p4.flags.length === 0);
+  const p5 = planReconcile([worked], [], guard());
+  check('Guess no longer produces an approved shift, badges still there: kept', p5.flags.length === 0);
+  const p6 = planReconcile([worked], [], guard([11]));
+  check('…but if its badge was set aside, that is a real change: held for removal', p6.flags[0]?.pendingValues.deleted === true);
+  const lateBadge = { ...moved, punchIds: [10, 11, 12], checkOut: new Date('2026-10-07T16:00:00Z') };
+  check('A new badge on a guessed date is a real change: held for re-approval', planReconcile([worked], [lateBadge], guard()).flags.length === 1);
+  check('Without a guess (confirmed schedule), the batch move is held as before', planReconcile([worked], [moved], { ...guard(), guessed: () => false }).flags.length === 1);
+}
+
 // --- Permanent staff: HR approves shift by shift from 1 Oct 2026 ---
 {
   check('Before the cutover: monthly batch', hrUnitKind('2026-09-30') === 'hr-month' && hrUnitKey('A', '2026-09-30', 1) === 'hr:A:2026-09');
@@ -123,7 +157,7 @@ function stored(overrides = {}) {
   check('Suggested → confirmed schedule on an approved row: not flagged for re-approval', p.flags.length === 0);
   check('  its label is brought up to date', p.relabels.length === 1 && p.relabels[0].source === 'schedule');
   const p2 = planReconcile([approved], [row({ source: 'unscheduled' })]);
-  check('Other source changes on an approved row still need re-approval', p2.flags.length === 1);
+  check('Any label-only change (e.g. unscheduled ↔ suggested) on an approved row: relabelled, not reopened', p2.flags.length === 0 && p2.relabels[0]?.source === 'unscheduled');
   const held = stored({ source: 'suggested', approvedAt: new Date(), changedAfterApproval: true });
   const p3 = planReconcile([held], [row({ source: 'schedule' })]);
   check('A held row now matching its approved values is cleared, and its batch re-checked', p3.clears.length === 1 && p3.reopenKeys.has(held.approvalKey));

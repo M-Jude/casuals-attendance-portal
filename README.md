@@ -413,7 +413,18 @@ names the auditor.
   late-synced punch, a schedule fix) parks the new values in
   `pendingValues`, flags `changedAfterApproval`, reopens the batch and
   restarts its 48h clock. Finance keeps seeing the approved values until
-  it's re-approved.
+  it's re-approved. Two things never reopen a batch:
+  - **a label-only change** (scheduled / exception / "Schedule not
+    confirmed" / unscheduled) with the same times and status — the label
+    is updated quietly;
+  - **a guessed pattern.** On dates where a worker has no confirmed
+    schedule or exception, what's expected comes from the nightly
+    profiler's suggestion, which can change any night. There, approved
+    shifts stay as approved unless their badges change (a new badge, or
+    one set aside), and an absence or batch move the guess implies isn't
+    added to a batch that's already been approved. Only HR confirming a
+    schedule (with "Re-approve automatically") changes approved history
+    (`planReconcile` guard in `sync/approvalLogic.js`).
 - **Re-approving automatically with a schedule change.** Changing a
   worker's schedule (Schedules → Workers, or accepting in Pattern review)
   asks for confirmation with a **"Re-approve changed records
