@@ -7,9 +7,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 //
 //   const toast = useToast();
 //   toast.success('Saved.');  toast.error(err.message);  toast.info('Already done.');
+//   toast.success('Badge set aside.', { action: { label: 'Undo', onClick: undo } });
+//
+// A message with an action button stays up longer (ACTION_DURATION), so
+// there's time to use it; using it closes the message.
 
 const ToastContext = createContext(null);
 const DURATION = { success: 4500, info: 6000, warn: 9000, error: 10000 };
+const ACTION_DURATION = 12000;
 let nextId = 1;
 
 export function ToastProvider({ children }) {
@@ -22,22 +27,22 @@ export function ToastProvider({ children }) {
     setToasts((list) => list.filter((t) => t.id !== id));
   }, []);
 
-  const show = useCallback((kind, message) => {
+  const show = useCallback((kind, message, { action = null } = {}) => {
     if (!message) return;
     const id = nextId++;
     // The same message twice in a row (e.g. a repeated error) replaces the
     // first rather than stacking up.
-    setToasts((list) => [...list.filter((t) => t.message !== message).slice(-3), { id, kind, message }]);
-    timers.current.set(id, setTimeout(() => dismiss(id), DURATION[kind]));
+    setToasts((list) => [...list.filter((t) => t.message !== message).slice(-3), { id, kind, message, action }]);
+    timers.current.set(id, setTimeout(() => dismiss(id), action ? Math.max(ACTION_DURATION, DURATION[kind]) : DURATION[kind]));
   }, [dismiss]);
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   const api = useMemo(() => ({
-    success: (m) => show('success', m),
-    info: (m) => show('info', m),
-    warn: (m) => show('warn', m),
-    error: (m) => show('error', m)
+    success: (m, o) => show('success', m, o),
+    info: (m, o) => show('info', m, o),
+    warn: (m, o) => show('warn', m, o),
+    error: (m, o) => show('error', m, o)
   }), [show]);
 
   return (
@@ -48,6 +53,9 @@ export function ToastProvider({ children }) {
           <div key={t.id} className={`toast toast--${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
             <span className="toast__icon" aria-hidden="true">{{ success: '✓', info: 'i', warn: '!', error: '✕' }[t.kind]}</span>
             <span className="toast__msg">{t.message}</span>
+            {t.action && (
+              <button className="toast__action" onClick={() => { dismiss(t.id); t.action.onClick(); }}>{t.action.label}</button>
+            )}
             <button className="toast__close" onClick={() => dismiss(t.id)} aria-label="Dismiss message">×</button>
           </div>
         ))}

@@ -1048,6 +1048,23 @@ body.no-scroll { overflow: hidden; }
   .report-table thead { display: table-header-group; }
 }
 
+/* Badges set aside, on the dashboard (SetAsideBadges.jsx). */
+.aside-list {
+  list-style: none; margin: 0; padding: 0; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+}
+.aside-list__item {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 18px; border-bottom: 1px solid var(--line-soft);
+}
+.aside-list__item:last-child { border-bottom: none; }
+.aside-list__main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aside-list__name { font-weight: 600; }
+.aside-list__badge { font-size: 13.5px; text-decoration: line-through; color: var(--muted); }
+@media (max-width: 600px) {
+  .aside-list__item { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
+}
+
 /* Pop-up action messages (toast.jsx). Bottom-right; above the tab bar on phones. */
 .toasts {
   position: fixed; right: 20px; bottom: 20px; z-index: 1000;
@@ -1076,6 +1093,11 @@ body.no-scroll { overflow: hidden; }
   font-size: 20px; line-height: 1; padding: 0 4px;
 }
 .toast__close:hover { color: var(--text); }
+.toast__action {
+  flex: 0 0 auto; border: none; background: none; color: var(--accent); cursor: pointer;
+  font: inherit; font-weight: 600; padding: 1px 4px;
+}
+.toast__action:hover { text-decoration: underline; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 @media (max-width: 600px) {

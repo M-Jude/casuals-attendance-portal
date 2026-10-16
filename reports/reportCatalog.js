@@ -731,6 +731,16 @@ function buildExceptions(ctx, rows) {
     detail: rs.map((r) => `${r.shift.name} ${r.checkIn ? eatClock(r.checkIn) : '?'}-${r.checkOut ? eatClock(r.checkOut) : '?'}`).join(' + '),
     missing: rs.filter((r) => !r.checkOut).map((r) => `${r.shift.name} clock-out`).join(', ')
   }));
+  // Badges set aside in the period (ctx.setAside, loaded by the route): left
+  // out of every shift, so worth a second look in case one was real.
+  const aside = (ctx.setAside || []).map((b) => {
+    const date = dateStrOf(new Date(new Date(b.timestamp).getTime() + EAT_OFFSET_MS));
+    return {
+      date, badge: b.timestamp, id: b.worker.biostarUserId, worker: b.worker.name,
+      crew: crewNameOf(ctx, { worker: b.worker, date: new Date(`${date}T00:00:00Z`), approvalCrewId: null }),
+      by: b.setAside.by || '', at: b.setAside.at, reason: b.setAside.reason || ''
+    };
+  });
 
   const sections = [
     late.length && {
@@ -769,6 +779,13 @@ function buildExceptions(ctx, rows) {
       title: 'Possible double shifts - check', note: `${possible.length} back to back with another shift but missing a clock-out - not counted as doubles. Often a stray badge: set it aside, or record a Day + Night exception if both were worked.`,
       columns: [...lead.map((c) => (c.key === 'shift' ? { ...c, width: 1.5 } : c)), { key: 'detail', label: 'Shifts', type: 'text', width: 2.6 }, { key: 'missing', label: 'Missing', type: 'text', width: 1.4 }],
       rows: possible, totals: null
+    },
+    aside.length && {
+      title: 'Badges set aside', note: `${aside.length} badge${aside.length === 1 ? '' : 's'} left out of every shift as made by mistake. If one was real, restore it from the Attendance page, under Badges set aside.`,
+      columns: [COL.date, { key: 'badge', label: 'Badge', type: 'time', width: 0.7 }, COL.id, COL.worker, COL.crew,
+        { key: 'by', label: 'Set aside by', type: 'text', width: 1.6 }, { key: 'at', label: 'On', type: 'datetime', width: 1.5 },
+        { key: 'reason', label: 'Reason', type: 'text', width: 2.4 }],
+      rows: aside, totals: null
     }
   ].filter(Boolean);
 
@@ -798,7 +815,8 @@ function buildExceptions(ctx, rows) {
       { label: 'Early check-outs', value: String(earlyOut.length), sub: 'left before shift end', tone: 'warn' },
       { label: 'Multiple punches', value: String(multi.length), sub: 'extra badges mid-shift', tone: 'grey' },
       { label: 'Unscheduled', value: String(unscheduled.length), sub: 'outside the schedule', tone: 'navy' },
-      { label: 'Double shifts', value: String(doubles.length), sub: possible.length ? `two shifts back to back · ${possible.length} possible, to check` : 'two shifts back to back', tone: 'teal' }
+      { label: 'Double shifts', value: String(doubles.length), sub: possible.length ? `two shifts back to back · ${possible.length} possible, to check` : 'two shifts back to back', tone: 'teal' },
+      ...(ctx.setAside ? [{ label: 'Badges set aside', value: String(aside.length), sub: 'left out as made by mistake', tone: 'grey' }] : [])
     ],
     sections
   };

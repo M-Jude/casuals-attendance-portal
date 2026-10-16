@@ -8,7 +8,8 @@ const STATUS_ORDER_KEY = { 'late-in,early-out': 0, 'late-in': 1, 'early-out': 2 
 import { formatDateLabel, formatDateTime, formatTime } from './api';
 import { usePagination } from './Pagination';
 import { isAlreadyDone, useToast } from './toast';
-import { reapproveCheckbox, recalcResult, useConfirm } from './confirm';
+import { reapproveCheckbox, useConfirm } from './confirm';
+import { BADGE_EDITORS, useBadgeAside } from './badgeAside';
 
 function unitState(u) {
   if (u.status === 'approved') return { label: 'Approved', cls: 'chip--ok' };
@@ -69,13 +70,18 @@ function PendingChange({ row }) {
   );
 }
 
-const BADGE_EDITORS = ['sysadmin', 'hr', 'admin_assistant', 'supervisor'];
-
 function UnitDetail({ api, id, user, onBack, onApproved }) {
   const toast = useToast();
   const confirm = useConfirm();
   const approving = useRef(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // A badge set aside that was the batch's only record removes the batch:
+  // back to the list then (and after its Undo, to show the batch again).
+  const loneRecord = useRef(false);
+  const badges = useBadgeAside(api, user, () => {
+    if (loneRecord.current) onApproved();
+    else setReloadKey((k) => k + 1);
+  });
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [comment, setComment] = useState('');
@@ -113,7 +119,7 @@ function UnitDetail({ api, id, user, onBack, onApproved }) {
       title: `Set aside ${r.worker.name}’s badge at ${formatTime(r.checkIn || r.checkOut)}?`,
       body: (
         <>
-          <p>It looks like a badge made by mistake next to their {r.possibleDouble}. It stays on record but is left out of their shifts, so this {r.shift.name} record goes away. It can be restored from the record’s punch history.</p>
+          <p>It looks like a badge made by mistake next to their {r.possibleDouble}. It stays on record but is left out of their shifts, so this {r.shift.name} record goes away. It can be restored from Attendance, under Badges set aside.</p>
           <label className="field">Why?
             <input className="input" maxLength={500} defaultValue="Accidental badge" onChange={(e) => { reason.current = e.target.value; }} />
           </label>
@@ -123,12 +129,9 @@ function UnitDetail({ api, id, user, onBack, onApproved }) {
       confirmLabel: 'Set aside'
     });
     if (!ok) return;
+    loneRecord.current = data.rows.length === 1;
     try {
-      const result = await api(`/api/punches/${r.strayPunchId}/set-aside`, { method: 'POST', body: { reason: reason.current.trim() || 'Accidental badge', autoReapprove: ok.checked === true } });
-      toast.success(`Badge set aside.${recalcResult(result.recalculated)}`);
-      // Its only record gone, an unapproved batch is removed: back to the list.
-      if (data.rows.length === 1) onApproved();
-      else setReloadKey((k) => k + 1);
+      await badges.setAside(r.strayPunchId, reason.current.trim() || 'Accidental badge', ok.checked === true);
     } catch (err) {
       toast.error(`Couldn’t set the badge aside: ${err.message}`);
     }

@@ -7,22 +7,25 @@
 //
 //   POST /api/punches/:id/set-aside   { reason, autoReapprove }
 //   POST /api/punches/:id/restore     { autoReapprove }
+//   GET  /api/punches/set-aside?from=&to=   the badges set aside in a period
 //
 // HR, the Admin Assistant and the System Admin can do it for anyone; a
-// supervisor for their own crew's workers, or for a badge in one of their
-// crew's approval batches.
+// supervisor for their own crew's workers, a badge in one of their crew's
+// approval batches, or one they set aside themselves
+// (services/setAsideBadges.js).
 
 const express = require('express');
 const prisma = require('../prismaClient');
 const authenticate = require('../middleware/authenticate');
 const { requireRole } = require('../middleware/requireRole');
 const { recomputeWorkers } = require('../services/recompute');
-const { buildResolver, scheduleKey } = require('../sync/scheduleResolver');
+const { canChangeBadge, listSetAside, EDITORS } = require('../services/setAsideBadges');
 const { addDaysStr, eatDateStr } = require('../sync/shiftEngine');
 
 const router = express.Router();
-const EDITORS = ['sysadmin', 'hr', 'admin_assistant'];
 const MAX_REASON = 500;
+const MAX_LIST_DAYS = 366;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
 // The badge, if this user may set it aside or restore it (else throws).
@@ -32,20 +35,8 @@ async function loadEditablePunch(user, id) {
     include: { worker: { select: { id: true, name: true, biostarUserId: true } } }
   });
   if (!punch) throw httpError(404, 'Badge not found.');
-  if (EDITORS.includes(user.role)) return punch;
-  if (user.role !== 'supervisor' || !user.crewId) throw httpError(403, 'You cannot change this badge.');
-
-  const date = eatDateStr(punch.timestamp.getTime());
-  const schedules = await prisma.workerSchedule.findMany({ where: { casualWorkerId: punch.casualWorkerId } });
-  const resolver = buildResolver({ schedules, rotations: [], exceptions: [], workers: [punch.worker], profiles: [] });
-  const onCrew = [date, eatDateStr(Date.now())].some((d) => scheduleKey(resolver.scheduleOn(punch.casualWorkerId, d)) === `crew:${user.crewId}`);
-  if (onCrew) return punch;
-  const rows = await prisma.dailyAttendanceSummary.findMany({
-    where: { casualWorkerId: punch.casualWorkerId, approvalCrewId: user.crewId, date: { gte: new Date(`${addDaysStr(date, -1)}T00:00:00Z`), lte: new Date(`${date}T00:00:00Z`) } },
-    select: { punchIds: true }
-  });
-  if (rows.some((r) => Array.isArray(r.punchIds) && r.punchIds.includes(punch.id))) return punch;
-  throw httpError(403, 'You can only change badges of your own crew’s workers.');
+  if (!(await canChangeBadge(user, punch))) throw httpError(403, 'You can only change badges of your own crew’s workers.');
+  return punch;
 }
 
 // Works the worker's records out again around the badge.
@@ -55,6 +46,20 @@ function recompute(punch, user, autoReapprove) {
 }
 
 const when = (t) => new Date(t).toLocaleString('en-GB', { timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// Badges set aside in a period (Kampala dates, inclusive) that this user may
+// see, with whether they may restore each.
+router.get('/punches/set-aside', authenticate, async (req, res) => {
+  const { from, to } = req.query;
+  if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '') || from > to) return res.status(400).json({ error: 'Give a period: from and to (YYYY-MM-DD).' });
+  if (Date.parse(to) - Date.parse(from) > MAX_LIST_DAYS * 24 * 3600 * 1000) return res.status(400).json({ error: `Choose a period of at most ${MAX_LIST_DAYS} days.` });
+  try {
+    res.json({ badges: await listSetAside(req.user, from, to) });
+  } catch (err) {
+    console.error('Failed to list set-aside badges:', err);
+    res.status(500).json({ error: 'Could not load the badges set aside.' });
+  }
+});
 
 router.post('/punches/:id/set-aside', authenticate, requireRole(...EDITORS, 'supervisor'), async (req, res) => {
   const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, MAX_REASON) : '';

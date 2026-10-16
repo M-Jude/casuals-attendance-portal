@@ -397,6 +397,17 @@ names the auditor.
   automatically" if ticked) and it can be restored. HR, the Admin
   Assistant, the System Admin and the worker's own supervisor can do it
   (`routes/punches.js`; audited).
+  - **A badge set aside by mistake** is easy to put back. The "Badge set
+    aside" message has **Undo**. The Attendance page lists every badge set
+    aside in the period under **Badges set aside** (who, when, why), with
+    Restore, so it can be found even when the shift record it made has gone.
+    The Exceptions report has a "Badges set aside" section too
+    (`services/setAsideBadges.js`). A supervisor sees, and may restore,
+    badges of their own crew's workers, badges in their crew's batches and
+    badges they set aside themselves; the Auditor and Director see them all.
+    Restoring re-approves changed records automatically by default for HR
+    and the System Admin. For others the box starts unticked, so the
+    change goes back for approval.
 - **Stray badges go to the worker's own supervisor.** A crew worker's
   record on the *other* shift of a day their crew works, with no exception
   for it, is routed to their own crew's batch rather than whichever crew is

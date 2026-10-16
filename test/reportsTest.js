@@ -274,6 +274,23 @@ const week = resolvePeriod({ period: 'week', date: '2026-09-21' });
   check('Both shifts clocked out: still a double', buildReport('summary', ctx, [day, n3], week).sections[0].rows[0].double === 1);
 }
 
+// --- Badges set aside, in the Exceptions report ---
+{
+  const W5 = { id: 5, name: 'Kugonza Edward', biostarUserId: 'C0052026' };
+  const setAside = [{
+    id: 99, timestamp: eat('2026-09-23', '07:22'), worker: W5,
+    setAside: { at: eat('2026-09-23', '10:15'), by: 'Nakato Ruth', reason: 'Accidental tap before his Night' }
+  }];
+  const r = buildReport('exceptions', { ...ctx, setAside }, rows, week);
+  const s = r.sections.find((x) => x.title === 'Badges set aside');
+  check('Set aside: own Exceptions section, one line per badge, its Kampala date and who/why',
+    s && s.rows.length === 1 && s.rows[0].date === '2026-09-23' && s.rows[0].by === 'Nakato Ruth' && s.rows[0].reason.startsWith('Accidental'));
+  check('Set aside: counted in the KPIs', r.kpis.find((k) => k.label === 'Badges set aside')?.value === '1');
+  check('Set aside: none loaded (no list) → no section, no KPI', !buildReport('exceptions', ctx, rows, week).kpis.some((k) => k.label === 'Badges set aside'));
+  const csv = renderCsv(r, { orgName: 'X', subcontractorName: 'A', generatedAt: new Date(), generatedBy: 'T', filters: [] });
+  check('Set aside: CSV prints the badge time and reason', csv.includes('07:22') && csv.includes('Accidental tap before his Night'));
+}
+
 // --- possibleDoubles(): a second shift still in progress isn't flagged yet ---
 {
   const { possibleDoubles } = require('../reports/doubleShift');

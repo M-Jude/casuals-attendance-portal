@@ -10,6 +10,7 @@ const { renderPdf } = require('../reports/renderPdf');
 const { dateStrOf, buildResolver } = require('../sync/scheduleResolver');
 const { unitLabel } = require('../sync/approvalLogic');
 const { accountNameResolver } = require('../services/accountNames');
+const { listSetAside } = require('../services/setAsideBadges');
 
 const router = express.Router();
 
@@ -164,9 +165,11 @@ router.get('/reports/:type', authenticate, async (req, res) => {
     }
 
     const ctx = { shifts, crewsById: new Map(crews.map((c) => [c.id, c])), worker, doubleRows };
+    // The Exceptions report lists the badges set aside in the period.
+    if (type.id === 'exceptions') ctx.setAside = await listSetAside(req.user, period.from, period.to, { workerId: worker?.id });
     // Each worker's own crew on a date, from their confirmed schedule.
     if (type.id !== 'approvals') {
-      const workerIds = [...new Set(data.map((r) => r.worker.id))];
+      const workerIds = [...new Set([...data.map((r) => r.worker.id), ...(ctx.setAside || []).map((b) => b.worker.id)])];
       const resolver = buildResolver({ schedules: await prisma.workerSchedule.findMany({ where: { casualWorkerId: { in: workerIds } } }) });
       ctx.crewOf = (workerId, dateStr) => {
         const s = resolver.scheduleOn(workerId, dateStr);
