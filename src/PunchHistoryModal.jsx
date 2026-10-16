@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import StatusTags from './StatusTags';
 import { isGuessed, GUESSED_TITLE } from './shiftStatus';
-import { reapproveCheckbox, recalcResult, useConfirm } from './confirm';
+import { useConfirm } from './confirm';
 import { useToast } from './toast';
+import { setAsideCheckbox, useBadgeAside } from './badgeAside';
 
 function formatDateTime(ts) {
   return new Date(ts).toLocaleString([], {
@@ -29,57 +30,47 @@ function punchRole(p) {
 }
 
 // canSetAside: HR, the Admin Assistant, the System Admin and supervisors can
-// set a badge made by mistake aside (or restore it); onChanged reloads the
-// records afterwards.
-export default function PunchHistoryModal({ token, summary, onClose, canSetAside = false, onChanged }) {
+// set a badge made by mistake aside (or restore it), through api as user;
+// onChanged reloads the records afterwards (an Undo included).
+export default function PunchHistoryModal({ token, api, user, summary, onClose, canSetAside = false, onChanged }) {
   const [punches, setPunches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const confirm = useConfirm();
   const toast = useToast();
+  const badges = useBadgeAside(api, user, onChanged);
 
   async function changeBadge(p, action) {
+    if (action === 'restore') {
+      setBusy(true);
+      try { await badges.restore(p, summary.worker.name); } finally { setBusy(false); }
+      return;
+    }
     const reason = { current: '' };
-    const day = new Date(new Date(p.timestamp).getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
-    const ok = await confirm(action === 'set-aside'
-      ? {
-          title: `Set aside the badge of ${formatDateTime(p.timestamp)}?`,
-          body: (
-            <>
-              <p>It stays on record but is left out of {summary.worker.name}’s shifts, which are worked out again without it — use this for a badge made by mistake (an accidental tap). It can be restored.</p>
-              <label className="field">Why?
-                <input className="input" maxLength={500} placeholder="e.g. Accidental tap in the morning before his Night shift" onChange={(e) => { reason.current = e.target.value; }} />
-              </label>
-            </>
-          ),
-          checkbox: reapproveCheckbox(day),
-          confirmLabel: 'Set aside'
-        }
-      : {
-          title: `Restore the badge of ${formatDateTime(p.timestamp)}?`,
-          body: <p>It was set aside{p.setAside.reason ? `: “${p.setAside.reason}”` : ''}. {summary.worker.name}’s shifts are worked out again with it.</p>,
-          checkbox: reapproveCheckbox(day),
-          confirmLabel: 'Restore'
-        });
+    const ok = await confirm({
+      title: `Set aside the badge of ${formatDateTime(p.timestamp)}?`,
+      body: (
+        <>
+          <p>It stays on record but is left out of {summary.worker.name}’s shifts, which are worked out again without it — use this for a badge made by mistake (an accidental tap). It can be restored.</p>
+          <label className="field">Why?
+            <input className="input" maxLength={500} placeholder="e.g. Accidental tap in the morning before his Night shift" onChange={(e) => { reason.current = e.target.value; }} />
+          </label>
+        </>
+      ),
+      checkbox: setAsideCheckbox(p.timestamp),
+      confirmLabel: 'Set aside'
+    });
     if (!ok) return;
-    if (action === 'set-aside' && !reason.current.trim()) {
+    if (!reason.current.trim()) {
       toast.error('Say why the badge is being set aside.');
       return;
     }
     setBusy(true);
     try {
-      const res = await fetch(`/api/punches/${p.id}/${action}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason.current.trim(), autoReapprove: ok.checked === true })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Request failed');
-      toast.success(`${action === 'set-aside' ? 'Badge set aside' : 'Badge restored'}.${recalcResult(data.recalculated)}`);
-      onChanged?.();
+      await badges.setAside(p.id, reason.current.trim(), ok.checked === true);
     } catch (err) {
-      toast.error(`Couldn’t ${action === 'set-aside' ? 'set the badge aside' : 'restore the badge'}: ${err.message}`);
+      toast.error(`Couldn’t set the badge aside: ${err.message}`);
     } finally {
       setBusy(false);
     }

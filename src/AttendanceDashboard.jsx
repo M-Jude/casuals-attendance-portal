@@ -8,7 +8,12 @@ import { SortHeading, sortItems } from './useSort';
 import { downloadAuthenticated } from './downloadFile';
 import { usePagination } from './Pagination';
 import { useBusy, useToast } from './toast';
-import { isReadOnly } from './api';
+import { isReadOnly, makeApi } from './api';
+import SetAsideBadges from './SetAsideBadges';
+import { BADGE_EDITORS, useBadgeAside } from './badgeAside';
+
+// Roles that see the "Badges set aside" list (Finance sees approved records only).
+const ASIDE_VIEWERS = [...BADGE_EDITORS, 'auditor', 'director'];
 
 // The dashboard loads every record in the range (in chunks) so the overview
 // covers all of it; the table then pages through them on screen.
@@ -185,6 +190,29 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
     loadSummaries();
   }, [loadSummaries]);
 
+  // Badges set aside in the period — restorable here even when the shift
+  // record they made has gone.
+  const api = useMemo(() => makeApi(token, onLogout), [token, onLogout]);
+  const [asideBadges, setAsideBadges] = useState([]);
+  const loadAside = useCallback(async () => {
+    if (!ASIDE_VIEWERS.includes(user.role) || !from || !to || from > to) return setAsideBadges([]);
+    try {
+      const { badges } = await api(`/api/punches/set-aside?${new URLSearchParams({ from, to })}`);
+      setAsideBadges(badges);
+    } catch {
+      setAsideBadges([]); // the records still load; the list is extra
+    }
+  }, [api, user.role, from, to]);
+  useEffect(() => { loadAside(); }, [loadAside]);
+
+  // After a badge is set aside or restored (an Undo included).
+  const afterBadgeChange = useCallback(() => {
+    setSelectedRow(null);
+    loadSummaries();
+    loadAside();
+  }, [loadSummaries, loadAside]);
+  const badges = useBadgeAside(api, user, afterBadgeChange);
+
   // Triggers a fresh pull from BioStar (the same job the hourly cron runs)
   // plus a recompute of the shift-aware summaries, then reloads the
   // currently selected date range so new punches show up without waiting
@@ -280,6 +308,14 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         (!filterApproval || approvalState(r).key === filterApproval)
     );
   }, [lines, filterId, filterName, filterShift, filterApproval, isDoubleRow]);
+  // The name and ID filters apply to the badges set aside too.
+  const visibleAside = useMemo(() => {
+    const idQuery = filterId.trim().toLowerCase();
+    const nameQuery = filterName.trim().toLowerCase();
+    return asideBadges.filter((b) =>
+      (!idQuery || b.worker.biostarUserId.toLowerCase().includes(idQuery)) &&
+      (!nameQuery || b.worker.name.toLowerCase().includes(nameQuery)));
+  }, [asideBadges, filterId, filterName]);
 
   const sortedRows = useMemo(() => sortRows(visibleRows, sortBy), [visibleRows, sortBy]);
   const [sortField, sortDir] = sortBy.split('-');
@@ -499,6 +535,10 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
         </section>
       )}
 
+      {!loading && visibleAside.length > 0 && (
+        <SetAsideBadges badges={visibleAside} onRestore={(b) => badges.restore(b, b.worker.name)} />
+      )}
+
       <section className="dash__section">
         <div className="dash__records-head">
           <div className="dash__section-title">
@@ -566,10 +606,12 @@ export default function AttendanceDashboard({ token, user, onLogout }) {
       {selectedRow && (
         <PunchHistoryModal
           token={token}
+          api={api}
+          user={user}
           summary={selectedRow}
           onClose={() => setSelectedRow(null)}
-          canSetAside={['sysadmin', 'hr', 'admin_assistant', 'supervisor'].includes(user.role)}
-          onChanged={() => { setSelectedRow(null); loadSummaries(); }}
+          canSetAside={BADGE_EDITORS.includes(user.role)}
+          onChanged={afterBadgeChange}
         />
       )}
 
