@@ -7,6 +7,11 @@ const BIOSTAR_PASS = process.env.BIOSTAR_API_PASS;
 
 let taSessionCookie = null; // full "bs-ta-session-id=<value>" cookie string
 
+// Every BioStar call gives up after this long. Without it, a request BioStar
+// accepts but never answers hangs forever while holding the shared sync lock,
+// so every later live and hourly sync stalls and the Live page goes stale.
+const TIMEOUT_MS = parseInt(process.env.BIOSTAR_TIMEOUT_MS, 10) || 90 * 1000;
+
 function getAgent() {
   // Most on-prem BioStar servers use self-signed certs — point BIOSTAR_CA_CERT
   // at the real CA bundle rather than disabling verification.
@@ -49,7 +54,7 @@ async function loginToTA() {
   const res = await axios.post(
     `${TA_BASE_URL}/login`,
     { user_id: BIOSTAR_USER, password: BIOSTAR_PASS },
-    { httpsAgent: getAgent(), validateStatus: () => true }
+    { httpsAgent: getAgent(), timeout: TIMEOUT_MS, validateStatus: () => true }
   );
 
   taSessionCookie = extractCookie(res.headers['set-cookie'], 'bs-ta-session-id');
@@ -77,7 +82,7 @@ async function fetchPunchLogsForDate(dateStr) {
       retrieve_only_modified: false,
       limit: 5000
     },
-    { headers: { Cookie: taSessionCookie }, httpsAgent: getAgent(), validateStatus: () => true }
+    { headers: { Cookie: taSessionCookie }, httpsAgent: getAgent(), timeout: TIMEOUT_MS, validateStatus: () => true }
   );
 
   if (res.status === 401 || res.status === 404) {
@@ -112,6 +117,7 @@ async function fetchGroupUsers(groupName) {
   while (offset < total) {
     const res = await axios.get(`${TA_BASE_URL}/users`, {
       httpsAgent: getAgent(),
+      timeout: TIMEOUT_MS,
       headers: { Cookie: taSessionCookie },
       params: { offset, limit },
       validateStatus: () => true
